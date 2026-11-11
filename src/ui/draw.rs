@@ -24,7 +24,8 @@ fn button(label: &str) -> Span<'static> {
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let [head, body, foot] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
     draw_header(f, app, head);
     let body = body.inner(Margin::new(2, 0));
     match app.screen {
@@ -135,14 +136,12 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Screen::Review => "Enter launch · e edit · p re-plan · ? help".to_string(),
         Screen::Run => "↑/↓ agent · i inspect · Enter report · ? help".to_string(),
         Screen::Viewer => "j/k scroll · Tab/1–9 switch · s save · ? help".to_string(),
-        Screen::History => {
-            if app.history.filtering {
-                "type to filter · Enter keep · Esc clear"
-            } else {
-                "Enter open · r resume · d delete · ? help"
-            }
-            .to_string()
+        Screen::History => if app.history.filtering {
+            "type to filter · Enter keep · Esc clear"
+        } else {
+            "Enter open · r resume · d delete · ? help"
         }
+        .to_string(),
         Screen::Settings => "↑/↓ select · Enter edit · ? help".to_string(),
     };
     f.render_widget(Paragraph::new(Span::styled(format!(" {hint}"), muted())), area);
@@ -166,7 +165,8 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
 // ---- screens ----
 
 fn draw_signin(f: &mut Frame, app: &App, area: Rect) {
-    let mut lines: Vec<Line> = vec![Line::from(Span::styled("rsc", accent().add_modifier(Modifier::BOLD))), Line::raw("")];
+    let mut lines: Vec<Line> =
+        vec![Line::from(Span::styled("rsc", accent().add_modifier(Modifier::BOLD))), Line::raw("")];
     let spin = SPINNER[app.tick % SPINNER.len()];
     match &app.signin.phase {
         SignInPhase::Idle => lines.push(Line::from(button("Continue with ChatGPT"))),
@@ -216,7 +216,11 @@ fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
     let focus_in = !app.home.chips;
     let border = if focus_in { accent() } else { muted() };
     app.home.input.set_block(Block::bordered().border_type(BorderType::Rounded).border_style(border));
-    app.home.input.set_cursor_style(if focus_in { Style::new().add_modifier(Modifier::REVERSED) } else { Style::default() });
+    app.home.input.set_cursor_style(if focus_in {
+        Style::new().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default()
+    });
     f.render_widget(&app.home.input, inp);
 
     let h = &app.home;
@@ -233,8 +237,12 @@ fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
 
     let msg = match (&app.cfg_err, &app.models) {
         (Some(e), _) => Some(Span::styled(e.clone(), Style::new().fg(Color::Red))),
-        (_, Models::Failed(m)) => Some(Span::styled(format!("Couldn't load models: {m} — r retry"), Style::new().fg(Color::Red))),
-        (_, Models::Loading) => Some(Span::styled(format!("{} loading models…", SPINNER[app.tick % SPINNER.len()]), muted())),
+        (_, Models::Failed(m)) => {
+            Some(Span::styled(format!("Couldn't load models: {m} — r retry"), Style::new().fg(Color::Red)))
+        }
+        (_, Models::Loading) => {
+            Some(Span::styled(format!("{} loading models…", SPINNER[app.tick % SPINNER.len()]), muted()))
+        }
         _ => None,
     };
     if let Some(m) = msg {
@@ -263,7 +271,8 @@ fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_review(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(rv) = run_view(app) else { return };
-    let [stages, _, rest] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    let [stages, _, rest] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(area);
     f.render_widget(Paragraph::new(stage_line(&rv)), stages);
     let w = area.width.saturating_sub(4) as usize;
     let mut lines: Vec<Line> = vec![];
@@ -287,7 +296,10 @@ fn draw_review(f: &mut Frame, app: &mut App, area: Rect) {
         let mark = if selected { "▸ " } else { "  " };
         lines.push(Line::from(vec![
             Span::styled(mark, accent()),
-            Span::styled(trunc(&p.title, w), if selected { sel_style() } else { Style::new().add_modifier(Modifier::BOLD) }),
+            Span::styled(
+                trunc(&p.title, w),
+                if selected { sel_style() } else { Style::new().add_modifier(Modifier::BOLD) },
+            ),
         ]));
         for l in fmt::wrap(&p.brief, w) {
             lines.push(Line::from(Span::styled(format!("  {l}"), muted())));
@@ -317,7 +329,8 @@ fn draw_run(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     let synthesizing = rv.status == RunStatus::Synthesizing;
-    let err_h = if matches!(rv.status, RunStatus::Failed | RunStatus::Cancelled | RunStatus::Interrupted) { 2 } else { 0 };
+    let err_h =
+        if matches!(rv.status, RunStatus::Failed | RunStatus::Cancelled | RunStatus::Interrupted) { 2 } else { 0 };
     let [stages, gauge, _, body, synth, errs] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -365,7 +378,8 @@ fn draw_run(f: &mut Frame, app: &mut App, area: Rect) {
             draw_timeline(f, app, body, title, Some(a.brief.clone()), Some(sel), empty);
         } else if body.width >= 96 {
             let lw = (body.width * 2 / 5).clamp(32, 56);
-            let [left, _, right] = Layout::horizontal([Constraint::Length(lw), Constraint::Length(1), Constraint::Min(1)]).areas(body);
+            let [left, _, right] =
+                Layout::horizontal([Constraint::Length(lw), Constraint::Length(1), Constraint::Min(1)]).areas(body);
             draw_agent_list(f, app, &rv, left, true);
             draw_timeline(f, app, right, title, Some(a.brief.clone()), Some(sel), empty);
         } else {
@@ -377,7 +391,10 @@ fn draw_run(f: &mut Frame, app: &mut App, area: Rect) {
         let p = Paragraph::new(rv.synth_tail.clone()).style(muted()).wrap(Wrap { trim: false });
         let lines = p.line_count(synth.width);
         let h = synth.height.saturating_sub(1);
-        f.render_widget(Paragraph::new(Span::styled("synthesis", muted())), Rect::new(synth.x, synth.y, synth.width, 1));
+        f.render_widget(
+            Paragraph::new(Span::styled("synthesis", muted())),
+            Rect::new(synth.x, synth.y, synth.width, 1),
+        );
         let body = Rect::new(synth.x, synth.y + 1, synth.width, h);
         f.render_widget(p.scroll((lines.saturating_sub(h as usize) as u16, 0)), body);
     }
@@ -404,7 +421,8 @@ fn draw_run(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_viewer(f: &mut Frame, app: &mut App, area: Rect) {
-    let [tabs_area, _, body] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    let [tabs_area, _, body] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(area);
     let v = &mut app.viewer;
     let labels: Vec<String> = v
         .tabs
@@ -413,7 +431,8 @@ fn draw_viewer(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|(i, t)| if i < 9 { format!("{} {}", i + 1, trunc(&t.label, 22)) } else { trunc(&t.label, 22) })
         .collect();
     let mut start = 0;
-    while start < v.tab && labels[start..=v.tab].iter().map(|l| l.width() + 3).sum::<usize>() > tabs_area.width as usize {
+    while start < v.tab && labels[start..=v.tab].iter().map(|l| l.width() + 3).sum::<usize>() > tabs_area.width as usize
+    {
         start += 1;
     }
     let mut spans = vec![];
@@ -438,13 +457,19 @@ fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
     if app.history.filtering || !app.history.filter.is_empty() {
         let cursor = if app.history.filtering { "▏" } else { "" };
         f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled("/ ", muted()), Span::raw(format!("{}{cursor}", app.history.filter))])),
+            Paragraph::new(Line::from(vec![
+                Span::styled("/ ", muted()),
+                Span::raw(format!("{}{cursor}", app.history.filter)),
+            ])),
             filter,
         );
     }
     let items = app.history_visible();
     if items.is_empty() {
-        f.render_widget(Paragraph::new(Span::styled("No research yet", muted())).alignment(Alignment::Center), centered(list, list.width, 1));
+        f.render_widget(
+            Paragraph::new(Span::styled("No research yet", muted())).alignment(Alignment::Center),
+            centered(list, list.width, 1),
+        );
         return;
     }
     let h = list.height as usize;
@@ -462,7 +487,14 @@ fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(pad(&date, 16), muted()),
             Span::raw("  "),
             Span::styled(
-                pad(&if r.config.incognito { format!("[incognito] {}", one_line(&r.question)) } else { one_line(&r.question) }, qw),
+                pad(
+                    &if r.config.incognito {
+                        format!("[incognito] {}", one_line(&r.question))
+                    } else {
+                        one_line(&r.question)
+                    },
+                    qw,
+                ),
                 if selected { sel_style() } else { Style::new() },
             ),
             Span::raw("  "),
@@ -481,7 +513,9 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
             break;
         }
         let (label, value, hint): (String, String, &str) = match row {
-            Row::Account => ("Account".into(), app.account.as_ref().map(|a| a.email.clone()).unwrap_or_else(|| "—".into()), ""),
+            Row::Account => {
+                ("Account".into(), app.account.as_ref().map(|a| a.email.clone()).unwrap_or_else(|| "—".into()), "")
+            }
             Row::Usage => ("Manage usage ↗".into(), String::new(), ""),
             Row::Model(st) => {
                 let sm = app.current_stage(PickScope::Settings, *st);
@@ -527,12 +561,18 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             let text = vec![
                 Line::from(Span::styled("You're using your ChatGPT plan", Style::new().add_modifier(Modifier::BOLD))),
                 Line::raw(""),
-                Line::from(Span::styled("Research requests use your plan's usage. Manage it anytime in ChatGPT settings.", muted())),
+                Line::from(Span::styled(
+                    "Research requests use your plan's usage. Manage it anytime in ChatGPT settings.",
+                    muted(),
+                )),
                 Line::raw(""),
                 Line::from(button("Got it")),
             ];
             f.render_widget(
-                Paragraph::new(text).alignment(Alignment::Center).wrap(Wrap { trim: true }).block(modal_block("").padding(ratatui::widgets::Padding::horizontal(1))),
+                Paragraph::new(text)
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true })
+                    .block(modal_block("").padding(ratatui::widgets::Padding::horizontal(1))),
                 r,
             );
         }
@@ -547,7 +587,10 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from(vec![button("Manage usage"), Span::styled("   Esc Close", muted())]),
             ];
             f.render_widget(
-                Paragraph::new(text).alignment(Alignment::Center).wrap(Wrap { trim: true }).block(modal_block("").padding(ratatui::widgets::Padding::horizontal(1))),
+                Paragraph::new(text)
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true })
+                    .block(modal_block("").padding(ratatui::widgets::Padding::horizontal(1))),
                 r,
             );
         }
@@ -569,10 +612,22 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             f.render_widget(Clear, r);
             f.render_widget(modal_block(if a.idx.is_some() { "Edit angle" } else { "Add angle" }), r);
             let inner = r.inner(Margin::new(1, 1));
-            let [t, b, hint] = Layout::vertical([Constraint::Length(3), Constraint::Length(3), Constraint::Length(1)]).areas(inner);
-            for (ta, label, focused, rect) in [(&mut a.title, "Title", !a.focus_brief, t), (&mut a.brief, "Brief", a.focus_brief, b)] {
-                ta.set_block(Block::bordered().border_type(BorderType::Rounded).border_style(if focused { accent() } else { muted() }).title(label));
-                ta.set_cursor_style(if focused { Style::new().add_modifier(Modifier::REVERSED) } else { Style::default() });
+            let [t, b, hint] =
+                Layout::vertical([Constraint::Length(3), Constraint::Length(3), Constraint::Length(1)]).areas(inner);
+            for (ta, label, focused, rect) in
+                [(&mut a.title, "Title", !a.focus_brief, t), (&mut a.brief, "Brief", a.focus_brief, b)]
+            {
+                ta.set_block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(if focused { accent() } else { muted() })
+                        .title(label),
+                );
+                ta.set_cursor_style(if focused {
+                    Style::new().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                });
                 f.render_widget(&*ta, rect);
             }
             f.render_widget(Paragraph::new(Span::styled("Tab switch · Enter save · Esc cancel", muted())), hint);
@@ -631,11 +686,8 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_picker(f: &mut Frame, app: &App, area: Rect) {
     let Modal::Picker(p) = &app.modal else { return };
-    let title = if p.effort_step {
-        format!("{} · effort", p.stage.label())
-    } else {
-        format!("{} · model", p.stage.label())
-    };
+    let title =
+        if p.effort_step { format!("{} · effort", p.stage.label()) } else { format!("{} · model", p.stage.label()) };
     let lines: Vec<Line> = match &app.models {
         Models::Ready(_) => {
             let entries = app.picker_entries(p);
@@ -791,7 +843,9 @@ fn entry_lines(e: &LogEntry, width: usize) -> Vec<Line<'static>> {
             }
             out
         }
-        LogEntry::Note(n) => vec![Line::from(Span::styled(format!("— {}", trunc(n, width.saturating_sub(2))), muted()))],
+        LogEntry::Note(n) => {
+            vec![Line::from(Span::styled(format!("— {}", trunc(n, width.saturating_sub(2))), muted()))]
+        }
     }
 }
 
@@ -813,7 +867,15 @@ fn timeline_tail(log: &[LogEntry], width: usize, want: usize) -> (Vec<Line<'stat
 }
 
 /// Bordered timeline panel. `src` is `None` for the planner, `Some(i)` for agent `i`.
-fn draw_timeline(f: &mut Frame, app: &mut App, area: Rect, title: String, brief: Option<String>, src: Option<usize>, empty: &str) {
+fn draw_timeline(
+    f: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    title: String,
+    brief: Option<String>,
+    src: Option<usize>,
+    empty: &str,
+) {
     let inner = Block::bordered().inner(area);
     let w = inner.width as usize;
     let brief_lines: Vec<String> = brief.map(|b| fmt::wrap(&b, w).into_iter().take(2).collect()).unwrap_or_default();
@@ -836,7 +898,8 @@ fn draw_timeline(f: &mut Frame, app: &mut App, area: Rect, title: String, brief:
     app.inspect.scroll = app.inspect.scroll.min(max);
     let scroll = app.inspect.scroll;
 
-    let mut block = Block::bordered().border_type(BorderType::Rounded).border_style(muted()).title(Span::styled(title, muted()));
+    let mut block =
+        Block::bordered().border_type(BorderType::Rounded).border_style(muted()).title(Span::styled(title, muted()));
     if scroll > 0 {
         block = block.title_bottom(Span::styled(" End ↓ latest ", muted()));
     }
@@ -856,9 +919,8 @@ fn draw_timeline(f: &mut Frame, app: &mut App, area: Rect, title: String, brief:
 
 fn draw_agent_list(f: &mut Frame, app: &App, rv: &RunView, list: Rect, compact: bool) {
     let cfg = app.run.as_ref().map(|r| r.with(|s| s.record.config.clone()));
-    let model_tag = cfg
-        .map(|c| format!("{}·{}", app.display_name(&c.researcher.model), c.researcher.effort))
-        .unwrap_or_default();
+    let model_tag =
+        cfg.map(|c| format!("{}·{}", app.display_name(&c.researcher.model), c.researcher.effort)).unwrap_or_default();
     let usage_by_agent: Vec<String> = rv
         .agents
         .iter()
@@ -883,7 +945,11 @@ fn draw_agent_list(f: &mut Frame, app: &App, rv: &RunView, list: Rect, compact: 
             let ctw = (list.width as usize).saturating_sub(2 + cost.width() + 1);
             Line::from(vec![agent_icon(a, app.tick), Span::raw(" "), Span::styled(pad(&a.title, ctw), title_style)])
         } else {
-            let act = if a.status == AgentStatus::Failed { a.error.clone().unwrap_or_default() } else { rv.activity.get(i).cloned().unwrap_or_default() };
+            let act = if a.status == AgentStatus::Failed {
+                a.error.clone().unwrap_or_default()
+            } else {
+                rv.activity.get(i).cloned().unwrap_or_default()
+            };
             let fixed = 2 + tw + 1 + mw + 2;
             let room = (list.width as usize).saturating_sub(fixed + cost.width() + 2);
             Line::from(vec![
@@ -893,7 +959,10 @@ fn draw_agent_list(f: &mut Frame, app: &App, rv: &RunView, list: Rect, compact: 
                 Span::raw(" "),
                 Span::styled(pad(&model_tag, mw), muted()),
                 Span::raw("  "),
-                Span::styled(trunc(&one_line(&act), room), if a.status == AgentStatus::Failed { Style::new().fg(Color::Red) } else { muted() }),
+                Span::styled(
+                    trunc(&one_line(&act), room),
+                    if a.status == AgentStatus::Failed { Style::new().fg(Color::Red) } else { muted() },
+                ),
             ])
         };
         f.render_widget(Paragraph::new(line), r);
@@ -935,7 +1004,9 @@ fn stage_line(rv: &RunView) -> Line<'static> {
             Span::styled(format!("✓ {n}"), muted())
         } else if i == cur {
             match rv.status {
-                RunStatus::Failed => Span::styled(format!("✗ {n}"), Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                RunStatus::Failed => {
+                    Span::styled(format!("✗ {n}"), Style::new().fg(Color::Red).add_modifier(Modifier::BOLD))
+                }
                 RunStatus::Cancelled | RunStatus::Interrupted => Span::styled(format!("■ {n}"), muted()),
                 _ => Span::styled(format!("● {n}"), sel_style()),
             }
@@ -954,8 +1025,10 @@ fn draw_clarify(f: &mut Frame, app: &mut App, area: Rect) {
         und.push(Line::from(Span::styled("Understood as", muted())));
         und.extend(fmt::wrap(&rv.understanding, w).into_iter().take(4).map(Line::from));
     }
-    let q_lines: Vec<Vec<String>> = rv.questions.iter().enumerate().map(|(i, q)| fmt::wrap(&format!("{}. {q}", i + 1), w)).collect();
-    let mut cons = vec![Constraint::Length(1), Constraint::Length(1), Constraint::Length(und.len() as u16), Constraint::Length(1)];
+    let q_lines: Vec<Vec<String>> =
+        rv.questions.iter().enumerate().map(|(i, q)| fmt::wrap(&format!("{}. {q}", i + 1), w)).collect();
+    let mut cons =
+        vec![Constraint::Length(1), Constraint::Length(1), Constraint::Length(und.len() as u16), Constraint::Length(1)];
     for ql in &q_lines {
         cons.extend([Constraint::Length(ql.len() as u16), Constraint::Length(3), Constraint::Length(1)]);
     }
@@ -964,7 +1037,8 @@ fn draw_clarify(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(und), rects[2]);
     let focus = app.clarify.focus;
     for (i, ql) in q_lines.into_iter().enumerate() {
-        let qs: Vec<Line> = ql.into_iter().map(|l| Line::from(Span::styled(l, Style::new().add_modifier(Modifier::BOLD)))).collect();
+        let qs: Vec<Line> =
+            ql.into_iter().map(|l| Line::from(Span::styled(l, Style::new().add_modifier(Modifier::BOLD)))).collect();
         f.render_widget(Paragraph::new(qs), rects[4 + 3 * i]);
         let Some(ta) = app.clarify.answers.get_mut(i) else { continue };
         let focused = i == focus;

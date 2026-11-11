@@ -86,11 +86,8 @@ impl Pricing {
     pub fn cost(&self, model: &str, u: &Usage) -> Option<f64> {
         let r = self.models.get(model)?;
         let long = u.input > self.long_context_threshold;
-        let (i, c, o) = if long {
-            (r.long_input, r.long_cached_input, r.long_output)
-        } else {
-            (r.input, r.cached_input, r.output)
-        };
+        let (i, c, o) =
+            if long { (r.long_input, r.long_cached_input, r.long_output) } else { (r.input, r.cached_input, r.output) };
         let fresh = u.input.saturating_sub(u.cached) as f64;
         let tok = (fresh * i + u.cached as f64 * c + u.output as f64 * o) / 1e6;
         Some(tok + self.search_cost(u))
@@ -108,7 +105,8 @@ mod tests {
     #[test]
     fn short_context() {
         let p = Pricing::default();
-        let u = Usage { input: 1_000_000, cached: 500_000, output: 100_000, web_search_calls: 10, ..Default::default() };
+        let u =
+            Usage { input: 1_000_000, cached: 500_000, output: 100_000, web_search_calls: 10, ..Default::default() };
         // input > 272k threshold → long rates; compute explicitly below instead
         let c = p.cost("gpt-6.1-sol", &u).unwrap();
         // long: 0.5*4 + 0.5*0.2 + 0.1*15 + 0.1

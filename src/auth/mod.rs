@@ -180,11 +180,7 @@ async fn post_form(http: &reqwest::Client, url: &str, form: &[(&str, &str)]) -> 
 }
 
 fn oauth_error(v: &Value) -> String {
-    v["error"]
-        .as_str()
-        .or_else(|| v["error"]["code"].as_str())
-        .unwrap_or("")
-        .to_string()
+    v["error"].as_str().or_else(|| v["error"]["code"].as_str()).unwrap_or("").to_string()
 }
 
 const UNUSABLE_REFRESH: &[&str] = &[
@@ -237,11 +233,7 @@ async fn wait_callback(listener: &TcpListener, state: &str) -> Result<Vec<(Strin
             let ok = params.iter().any(|(k, v)| k == "code" && !v.is_empty())
                 && params.iter().any(|(k, v)| k == "state" && v == state)
                 && !params.iter().any(|(k, _)| k == "error");
-            let body = if ok {
-                "Signed in — you can close this tab."
-            } else {
-                "Sign-in failed. Return to rsc."
-            };
+            let body = if ok { "Signed in — you can close this tab." } else { "Sign-in failed. Return to rsc." };
             let html = format!(
                 "<!doctype html><meta charset=utf-8><title>rsc</title><body style=\"font-family:sans-serif;text-align:center;margin-top:20vh\"><p>{body}</p>"
             );
@@ -254,9 +246,7 @@ async fn wait_callback(listener: &TcpListener, state: &str) -> Result<Vec<(Strin
             let _ = sock.shutdown().await;
             return Ok(params);
         }
-        let _ = sock
-            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .await;
+        let _ = sock.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
     }
 }
 
@@ -277,14 +267,7 @@ async fn verify_id_token(
 ) -> Result<Claims, AuthError> {
     use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
     let header = decode_header(id_token).map_err(|e| AuthError::Fatal(format!("bad id_token: {e}")))?;
-    let jwks: JwkSet = http
-        .get(JWKS_URL)
-        .send()
-        .await
-        .map_err(net_err)?
-        .json()
-        .await
-        .map_err(net_err)?;
+    let jwks: JwkSet = http.get(JWKS_URL).send().await.map_err(net_err)?.json().await.map_err(net_err)?;
     let kid = header.kid.ok_or_else(|| AuthError::Fatal("id_token has no kid".into()))?;
     let jwk = jwks.find(&kid).ok_or_else(|| AuthError::Fatal("unknown signing key".into()))?;
     let key = DecodingKey::from_jwk(jwk).map_err(|e| AuthError::Fatal(format!("bad jwk: {e}")))?;
@@ -300,10 +283,8 @@ async fn verify_id_token(
 }
 
 pub async fn sign_in(existing: Option<&Account>, reconsent: bool, ui: SignInUi) -> Result<Account, AuthError> {
-    let http = reqwest::Client::builder()
-        .user_agent(concat!("rsc/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(net_err)?;
+    let http =
+        reqwest::Client::builder().user_agent(concat!("rsc/", env!("CARGO_PKG_VERSION"))).build().map_err(net_err)?;
     let host = host_id().map_err(|e| AuthError::Fatal(e.to_string()))?;
     paths::ensure_dirs().map_err(|e| AuthError::Fatal(e.to_string()))?;
 
@@ -413,12 +394,7 @@ pub async fn sign_in(existing: Option<&Account>, reconsent: bool, ui: SignInUi) 
     {
         return Err(AuthError::IdentityMismatch);
     }
-    let scopes: Vec<String> = tok["scope"]
-        .as_str()
-        .unwrap_or("")
-        .split_whitespace()
-        .map(String::from)
-        .collect();
+    let scopes: Vec<String> = tok["scope"].as_str().unwrap_or("").split_whitespace().map(String::from).collect();
     let acct = Account {
         email: claims.email.or_else(|| existing.map(|a| a.email.clone())).unwrap_or_default(),
         issuer: ISSUER.into(),
@@ -482,12 +458,7 @@ impl AuthHandle {
         let lock_path = paths::accounts_dir().join(format!("{}.lock", self.id));
         let file = tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
             use std::os::unix::fs::OpenOptionsExt;
-            let f = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .mode(0o600)
-                .open(lock_path)?;
+            let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(lock_path)?;
             f.lock()?;
             Ok(f)
         })

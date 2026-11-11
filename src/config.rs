@@ -70,10 +70,7 @@ impl Config {
                     c.clamp();
                     (c, None)
                 }
-                Err(e) => (
-                    Config::default(),
-                    Some(format!("config.toml invalid: {} — using defaults", e.message())),
-                ),
+                Err(e) => (Config::default(), Some(format!("config.toml invalid: {} — using defaults", e.message()))),
             },
             Err(_) => {
                 let c = Config::default();

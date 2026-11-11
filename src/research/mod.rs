@@ -45,7 +45,9 @@ pub fn push_log(log: &mut Vec<LogEntry>, e: LogEntry) {
 /// Streaming append: merges into the last entry when both are Thinking or both are Text.
 pub fn append_log(log: &mut Vec<LogEntry>, e: LogEntry) {
     match (log.last_mut(), &e) {
-        (Some(LogEntry::Thinking(a)), LogEntry::Thinking(b)) | (Some(LogEntry::Text(a)), LogEntry::Text(b)) => a.push_str(b),
+        (Some(LogEntry::Thinking(a)), LogEntry::Thinking(b)) | (Some(LogEntry::Text(a)), LogEntry::Text(b)) => {
+            a.push_str(b)
+        }
         _ => push_log(log, e),
     }
 }
@@ -208,14 +210,24 @@ fn parse_plan(text: &str, force: bool) -> Option<PlanReply> {
     let field = |k: &str| v[k].as_str().unwrap_or("").trim().to_string();
     let questions: Vec<String> = v["questions"]
         .as_array()
-        .map(|a| a.iter().filter_map(|q| q.as_str()).map(|q| q.trim().to_string()).filter(|q| !q.is_empty()).take(3).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|q| q.as_str())
+                .map(|q| q.trim().to_string())
+                .filter(|q| !q.is_empty())
+                .take(3)
+                .collect()
+        })
         .unwrap_or_default();
     let ps: Vec<Perspective> = v["perspectives"]
         .as_array()
         .map(|a| {
             a.iter()
                 .filter_map(|p| {
-                    Some(Perspective { title: p["title"].as_str()?.trim().to_string(), brief: p["brief"].as_str()?.trim().to_string() })
+                    Some(Perspective {
+                        title: p["title"].as_str()?.trim().to_string(),
+                        brief: p["brief"].as_str()?.trim().to_string(),
+                    })
                 })
                 .take(8)
                 .collect()
@@ -475,7 +487,8 @@ impl Run {
             if !skipped {
                 for (question, a) in qs.into_iter().zip(answers) {
                     let a = a.trim();
-                    let answer = if a.is_empty() { "(no answer — use your judgment)".to_string() } else { a.to_string() };
+                    let answer =
+                        if a.is_empty() { "(no answer — use your judgment)".to_string() } else { a.to_string() };
                     s.record.clarifications.push(Clarification { question, answer });
                 }
             }
@@ -525,7 +538,8 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
         let done = self.call(&req, Some(&self.forwarder(Target::Planner))).await?;
         self.add_usage(Scope::Planner, done.usage);
         let text = output_text(&done.output);
-        let r = parse_plan(&text, force).ok_or_else(|| ApiError::new(ErrKind::Fatal, "Planner returned invalid plan"))?;
+        let r =
+            parse_plan(&text, force).ok_or_else(|| ApiError::new(ErrKind::Fatal, "Planner returned invalid plan"))?;
         self.with(|s| {
             if !r.understanding.is_empty() {
                 s.record.understanding = r.understanding;
@@ -540,12 +554,17 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
     // ---- API plumbing ----
 
     /// One API call with retry, mapping a rejected web_search into a clear message.
-    async fn call(&self, req: &ResponseRequest, tx: Option<&mpsc::UnboundedSender<StreamDelta>>) -> Result<Completed, ApiError> {
+    async fn call(
+        &self,
+        req: &ResponseRequest,
+        tx: Option<&mpsc::UnboundedSender<StreamDelta>>,
+    ) -> Result<Completed, ApiError> {
         match self.call_once(req, tx).await {
             Err(e)
                 if req.reasoning_summary
                     && e.kind == ErrKind::Fatal
-                    && (e.code.as_deref() == Some("subscription_sharing_unsupported_capability") || e.status == Some(400))
+                    && (e.code.as_deref() == Some("subscription_sharing_unsupported_capability")
+                        || e.status == Some(400))
                     && err_param_has(&e, "reasoning") =>
             {
                 self.reasoning_summary.store(false, Ordering::Relaxed);
@@ -557,11 +576,16 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
         }
     }
 
-    async fn call_once(&self, req: &ResponseRequest, tx: Option<&mpsc::UnboundedSender<StreamDelta>>) -> Result<Completed, ApiError> {
+    async fn call_once(
+        &self,
+        req: &ResponseRequest,
+        tx: Option<&mpsc::UnboundedSender<StreamDelta>>,
+    ) -> Result<Completed, ApiError> {
         match self.ctx.client.call_with_retry(req, tx, &self.cancel).await {
             Err(e)
                 if e.kind == ErrKind::Fatal
-                    && (e.code.as_deref() == Some("subscription_sharing_unsupported_capability") || e.status == Some(400))
+                    && (e.code.as_deref() == Some("subscription_sharing_unsupported_capability")
+                        || e.status == Some(400))
                     && err_param_has(&e, "web_search") =>
             {
                 let mut m = ApiError::new(
@@ -590,7 +614,9 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
                     (t, StreamDelta::Reasoning(d)) => run.log(t, LogEntry::Thinking(d), true),
                     (t, StreamDelta::ReasoningBreak) => run.log(t, LogEntry::Thinking(String::new()), false),
                     (t @ Target::Agent(_), StreamDelta::Text(d)) => run.log(t, LogEntry::Text(d), true),
-                    (t, StreamDelta::Restart) => run.log(t, LogEntry::Note("connection dropped — retrying".into()), false),
+                    (t, StreamDelta::Restart) => {
+                        run.log(t, LogEntry::Note("connection dropped — retrying".into()), false)
+                    }
                     (t, StreamDelta::Item(it)) => {
                         let agent = if let Target::Agent(i) = t { Some(*i) } else { None };
                         match it["type"].as_str().unwrap_or("") {
@@ -604,12 +630,15 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
                                 };
                                 run.log(t, e, false);
                                 if let Some(i) = agent {
-                                    let a = first_query(&it).map(|q| format!("searching: {q}")).unwrap_or_else(|| "searching".into());
+                                    let a = first_query(&it)
+                                        .map(|q| format!("searching: {q}"))
+                                        .unwrap_or_else(|| "searching".into());
                                     run.set_activity(i, a);
                                 }
                             }
                             "function_call" => {
-                                let args: Value = serde_json::from_str(it["arguments"].as_str().unwrap_or("")).unwrap_or(Value::Null);
+                                let args: Value =
+                                    serde_json::from_str(it["arguments"].as_str().unwrap_or("")).unwrap_or(Value::Null);
                                 let url = args["url"].as_str().unwrap_or("");
                                 run.log(t, LogEntry::Open(url.to_string()), false);
                                 if let Some(i) = agent {
@@ -664,18 +693,24 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
     ) -> Result<Completed, ApiError> {
         loop {
             match self.call(req, tx).await {
-                Err(e) if e.kind == ErrKind::Fatal && req.context_management.is_some()
-                    && (e.code.as_deref() == Some("subscription_sharing_unsupported_capability") || e.status == Some(400))
-                    && err_param_has(&e, "context_management") =>
+                Err(e)
+                    if e.kind == ErrKind::Fatal
+                        && req.context_management.is_some()
+                        && (e.code.as_deref() == Some("subscription_sharing_unsupported_capability")
+                            || e.status == Some(400))
+                        && err_param_has(&e, "context_management") =>
                 {
                     self.server_compaction.store(false, Ordering::Relaxed);
                     req.context_management = None;
                 }
-                Err(e) if e.kind == ErrKind::Fatal
-                    && self.fetch_enabled.load(Ordering::Relaxed)
-                    && req.tools.iter().any(|t| t["type"] == "namespace")
-                    && e.status == Some(400)
-                    && (err_param_has(&e, "namespace") || err_param_has(&e, "fetch_url") || err_param_has(&e, "tools[1]")) =>
+                Err(e)
+                    if e.kind == ErrKind::Fatal
+                        && self.fetch_enabled.load(Ordering::Relaxed)
+                        && req.tools.iter().any(|t| t["type"] == "namespace")
+                        && e.status == Some(400)
+                        && (err_param_has(&e, "namespace")
+                            || err_param_has(&e, "fetch_url")
+                            || err_param_has(&e, "tools[1]")) =>
                 {
                     self.fetch_enabled.store(false, Ordering::Relaxed);
                     req.tools.retain(|t| t["type"] != "namespace");
@@ -866,7 +901,9 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
                 };
                 req.input.push(json!({"type":"function_call_output","call_id":c["call_id"],"output":out}));
             }
-            if !self.server_compaction.load(Ordering::Relaxed) && done.usage.input + done.usage.output > cfg.compact_threshold_tokens {
+            if !self.server_compaction.load(Ordering::Relaxed)
+                && done.usage.input + done.usage.output > cfg.compact_threshold_tokens
+            {
                 self.set_activity(idx, "compacting");
                 self.note(Target::Agent(idx), "compacting context");
                 let summary = self.client_compact(&req.input).await?;

@@ -226,12 +226,7 @@ impl Client {
         cancel: &CancellationToken,
         token: &str,
     ) -> Result<Completed, ApiError> {
-        let send = self
-            .http
-            .post(format!("{API_BASE}/responses"))
-            .bearer_auth(token)
-            .json(&req.body())
-            .send();
+        let send = self.http.post(format!("{API_BASE}/responses")).bearer_auth(token).json(&req.body()).send();
         let resp = tokio::select! {
             _ = cancel.cancelled() => return Err(ApiError::cancelled()),
             r = send => r.map_err(Self::net)?,

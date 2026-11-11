@@ -19,10 +19,7 @@ pub fn fetch_url_namespace() -> Value {
 }
 
 pub fn host_of(url: &str) -> String {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(String::from))
-        .unwrap_or_else(|| "page".into())
+    url::Url::parse(url).ok().and_then(|u| u.host_str().map(String::from)).unwrap_or_else(|| "page".into())
 }
 
 pub fn fetch_http() -> reqwest::Client {

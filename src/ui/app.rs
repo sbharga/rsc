@@ -330,7 +330,15 @@ impl App {
             run: None,
             review_sel: 0,
             run_sel: 0,
-            viewer: Viewer { tabs: vec![], tab: 0, scroll: 0, back: Screen::Home, question: String::new(), view_h: 10, max_scroll: 0 },
+            viewer: Viewer {
+                tabs: vec![],
+                tab: 0,
+                scroll: 0,
+                back: Screen::Home,
+                question: String::new(),
+                view_h: 10,
+                max_scroll: 0,
+            },
             history: History { items: vec![], filter: String::new(), filtering: false, sel: 0 },
             settings_sel: 0,
             toast: None,
@@ -375,7 +383,11 @@ impl App {
     }
 
     pub fn display_name(&self, slug: &str) -> String {
-        self.catalog().iter().find(|m| m.slug == slug).map(|m| m.display_name.clone()).unwrap_or_else(|| slug.to_string())
+        self.catalog()
+            .iter()
+            .find(|m| m.slug == slug)
+            .map(|m| m.display_name.clone())
+            .unwrap_or_else(|| slug.to_string())
     }
 
     /// Stage with an empty/unknown model resolved against the catalog.
@@ -405,7 +417,12 @@ impl App {
             if let Some(m) = self.catalog().iter().find(|m| m.slug == slug) {
                 v.extend(m.efforts.iter().cloned());
             }
-            v.into_iter().map(|e| { let c = e == cur.effort && slug == cur.model; (e, c) }).collect()
+            v.into_iter()
+                .map(|e| {
+                    let c = e == cur.effort && slug == cur.model;
+                    (e, c)
+                })
+                .collect()
         } else {
             self.catalog().iter().map(|m| (m.display_name.clone(), m.slug == cur.model)).collect()
         }
@@ -849,7 +866,11 @@ impl App {
             }
             Modal::Angle(a) => {
                 let t = s.replace('\n', " ");
-                if a.focus_brief { a.brief.insert_str(t); } else { a.title.insert_str(t); }
+                if a.focus_brief {
+                    a.brief.insert_str(t);
+                } else {
+                    a.title.insert_str(t);
+                }
             }
             Modal::Number(n) => {
                 n.ta.insert_str(s.replace('\n', ""));
@@ -926,7 +947,9 @@ impl App {
             KeyCode::Left => self.home.chip = self.home.chip.saturating_sub(1),
             KeyCode::Right => self.home.chip = (self.home.chip + 1).min(4),
             KeyCode::Esc => self.home.chips = false,
-            KeyCode::Char('+') | KeyCode::Char('=') if self.home.chip == 0 => self.home.agents = (self.home.agents + 1).min(8),
+            KeyCode::Char('+') | KeyCode::Char('=') if self.home.chip == 0 => {
+                self.home.agents = (self.home.agents + 1).min(8)
+            }
             KeyCode::Char('-') if self.home.chip == 0 => self.home.agents = self.home.agents.saturating_sub(1).max(1),
             KeyCode::Char('m') => open_url(USAGE_URL),
             KeyCode::Char('r') => {
@@ -935,10 +958,18 @@ impl App {
                 }
             }
             KeyCode::Enter | KeyCode::Char(' ') => match self.home.chip {
-                0 if k.code == KeyCode::Enter => self.home.agents = if self.home.agents >= 8 { 1 } else { self.home.agents + 1 },
+                0 if k.code == KeyCode::Enter => {
+                    self.home.agents = if self.home.agents >= 8 { 1 } else { self.home.agents + 1 }
+                }
                 1..=3 if k.code == KeyCode::Enter => {
                     let stage = [Stage::Planner, Stage::Researcher, Stage::Synthesizer][self.home.chip - 1];
-                    self.modal = Modal::Picker(Picker { scope: PickScope::Chip, stage, effort_step: false, chosen: None, sel: 0 });
+                    self.modal = Modal::Picker(Picker {
+                        scope: PickScope::Chip,
+                        stage,
+                        effort_step: false,
+                        chosen: None,
+                        sel: 0,
+                    });
                     self.picker_preselect();
                 }
                 4 => self.home.incognito = !self.home.incognito,
@@ -1006,7 +1037,10 @@ impl App {
                 self.screen = Screen::Run;
             }
             KeyCode::Esc => {
-                self.modal = Modal::Confirm(Confirm { kind: ConfirmKind::CancelReview, text: "Cancel this research? y/n".into() });
+                self.modal = Modal::Confirm(Confirm {
+                    kind: ConfirmKind::CancelReview,
+                    text: "Cancel this research? y/n".into(),
+                });
             }
             _ => {}
         }
@@ -1042,7 +1076,8 @@ impl App {
                 }
             }
             KeyCode::Char('x') if status.is_live() => {
-                self.modal = Modal::Confirm(Confirm { kind: ConfirmKind::CancelRun, text: "Cancel this research? y/n".into() });
+                self.modal =
+                    Modal::Confirm(Confirm { kind: ConfirmKind::CancelRun, text: "Cancel this research? y/n".into() });
             }
             KeyCode::Char('r') if status.is_resumable() => {
                 let (rec, mem) = run.with(|s| (s.record.clone(), s.reports.clone()));
@@ -1083,7 +1118,10 @@ impl App {
             KeyCode::Tab => self.clarify.focus = (focus + 1) % n,
             KeyCode::BackTab => self.clarify.focus = (focus + n - 1) % n,
             KeyCode::Esc => {
-                self.modal = Modal::Confirm(Confirm { kind: ConfirmKind::CancelReview, text: "Cancel this research? y/n".into() });
+                self.modal = Modal::Confirm(Confirm {
+                    kind: ConfirmKind::CancelReview,
+                    text: "Cancel this research? y/n".into(),
+                });
             }
             _ if newline_key(&k) => {
                 if let Some(t) = self.clarify.answers.get_mut(focus) {
@@ -1201,7 +1239,8 @@ impl App {
             }
             KeyCode::Char('d') => {
                 if let Some(rec) = self.selected_history() {
-                    let live = self.run.as_ref().is_some_and(|r| r.status().is_live() && r.with(|s| s.record.id == rec.id));
+                    let live =
+                        self.run.as_ref().is_some_and(|r| r.status().is_live() && r.with(|s| s.record.id == rec.id));
                     if live {
                         self.toast("Can't delete the active research");
                     } else {
@@ -1241,7 +1280,13 @@ impl App {
                 }
                 Row::Usage => open_url(USAGE_URL),
                 Row::Model(stage) if k.code == KeyCode::Enter => {
-                    self.modal = Modal::Picker(Picker { scope: PickScope::Settings, stage, effort_step: false, chosen: None, sel: 0 });
+                    self.modal = Modal::Picker(Picker {
+                        scope: PickScope::Settings,
+                        stage,
+                        effort_step: false,
+                        chosen: None,
+                        sel: 0,
+                    });
                     self.picker_preselect();
                 }
                 Row::Model(_) => {}
@@ -1251,7 +1296,8 @@ impl App {
                         Num::MaxParallel => self.cfg.max_parallel as u32,
                         Num::ReportWords => self.cfg.report_words,
                     };
-                    self.modal = Modal::Number(Box::new(NumberEdit { which, ta: single_line_ta(&cur.to_string()), err: None }));
+                    self.modal =
+                        Modal::Number(Box::new(NumberEdit { which, ta: single_line_ta(&cur.to_string()), err: None }));
                 }
                 Row::Num(_) => {}
                 Row::FetchUrl => {
@@ -1382,7 +1428,11 @@ impl App {
                 return Modal::None;
             }
             _ => {
-                if a.focus_brief { a.brief.input(k); } else { a.title.input(k); }
+                if a.focus_brief {
+                    a.brief.input(k);
+                } else {
+                    a.title.input(k);
+                }
             }
         }
         Modal::Angle(a)
@@ -1404,7 +1454,10 @@ impl App {
                         }
                     }
                     ConfirmKind::Delete(id) => {
-                        let in_memory = self.run.as_ref().is_some_and(|r| r.with(|s| s.record.id == id && s.record.config.incognito));
+                        let in_memory = self
+                            .run
+                            .as_ref()
+                            .is_some_and(|r| r.with(|s| s.record.id == id && s.record.config.incognito));
                         let res = if in_memory { Ok(()) } else { store::delete(&id) };
                         match res {
                             Ok(()) => {
@@ -1437,7 +1490,8 @@ impl App {
                 if raw.trim().is_empty() {
                     return Modal::Save(s);
                 }
-                let parent = path.parent().map(|p| if p.as_os_str().is_empty() { PathBuf::from(".") } else { p.to_path_buf() });
+                let parent =
+                    path.parent().map(|p| if p.as_os_str().is_empty() { PathBuf::from(".") } else { p.to_path_buf() });
                 if !parent.is_some_and(|p| p.is_dir()) {
                     s.err = Some("Folder doesn't exist".into());
                     return Modal::Save(s);
