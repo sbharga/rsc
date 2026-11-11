@@ -5,7 +5,7 @@ pub mod store;
 pub mod tools;
 
 use crate::api::{ApiError, Client, Completed, ErrKind, ResponseRequest, StreamDelta};
-use crate::config::StageModel;
+use crate::config::{MAX_AGENTS, StageModel};
 use crate::pricing::{Pricing, Usage};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -230,7 +230,7 @@ fn parse_plan(text: &str, force: bool) -> Option<PlanReply> {
                         brief: p["brief"].as_str()?.trim().to_string(),
                     })
                 })
-                .take(8)
+                .take(MAX_AGENTS as usize)
                 .collect()
         })
         .unwrap_or_default();
@@ -853,11 +853,16 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
         let (brief, p, cfg) =
             self.with(|s| (task_brief(&s.record), s.record.perspectives[idx].clone(), s.record.config.clone()));
         let sm: &StageModel = &cfg.researcher;
+        let length = if cfg.report_words == 0 {
+            "as long as your findings need: thorough, with no padding".to_string()
+        } else {
+            format!("of at most about {} words", cfg.report_words)
+        };
         let mut req = ResponseRequest {
             model: sm.model.clone(),
             instructions: format!(
-                "You are one of several researchers working independently on the problem below. Your angle: {} — {}\nInvestigate as you see fit using the available tools. When finished, reply with a Markdown report of at most about {} words: key findings, evidence, open uncertainties, and the sources you relied on as Markdown links [title](url).",
-                p.title, p.brief, cfg.report_words
+                "You are one of several researchers working independently on the problem below. Your angle: {} — {}\nInvestigate as you see fit using the available tools. When finished, reply with a Markdown report {}: key findings, evidence, open uncertainties, and the sources you relied on as Markdown links [title](url).",
+                p.title, p.brief, length
             ),
             input: vec![user_msg(&brief)],
             tools: vec![],

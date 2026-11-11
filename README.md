@@ -7,7 +7,7 @@ Multi-agent deep research in your terminal, powered by your ChatGPT plan.
 You ask a question; rsc runs this pipeline:
 
 1. A planner does a few web searches and may ask up to 3 clarifying questions, over at most 2 rounds. Submitting empty answers skips them.
-2. You review and edit the research angles (1–8).
+2. You review and edit the research angles (1–99).
 3. Researchers run in parallel, each with web search. They can optionally use `fetch_url`.
 4. A synthesizer writes a single cited Markdown report.
 
@@ -78,9 +78,9 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `researcher` | `{model = "", effort = "medium"}` | Empty model = first model in the catalog |
 | `compactor` | `{model = "", effort = "low"}` | Empty model = first model in the catalog |
 | `synthesizer` | `{model = "", effort = "high"}` | Empty model = first model in the catalog |
-| `default_agents` | `4` | Clamped to 1–8 |
-| `max_parallel` | `3` | Clamped to 1–8 |
-| `report_words` | `1200` | Minimum 100 |
+| `default_agents` | `4` | Clamped to 1–99 |
+| `max_parallel` | `3` | Clamped to 1–99 |
+| `report_words` | `0` | `0` = the researcher sizes each report to the problem; otherwise minimum 100 |
 | `max_turns` | `30` | |
 | `compact_threshold_tokens` | `200000` | |
 | `synth_input_budget_tokens` | `120000` | |

@@ -1,5 +1,6 @@
 use super::app::*;
 use super::fmt::{self, SPINNER, one_line, pad, trunc};
+use crate::config::MAX_AGENTS;
 use crate::research::LogEntry;
 use crate::research::store::{AgentRec, AgentStatus, RunStatus, progress};
 use ratatui::Frame;
@@ -583,7 +584,10 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
             }
             Row::Num(Num::DefaultAgents) => ("Default agents".into(), app.cfg.default_agents.to_string(), ""),
             Row::Num(Num::MaxParallel) => ("Max parallel agents".into(), app.cfg.max_parallel.to_string(), ""),
-            Row::Num(Num::ReportWords) => ("Report length (words)".into(), app.cfg.report_words.to_string(), ""),
+            Row::Num(Num::ReportWords) => {
+                let v = app.cfg.report_words;
+                ("Report length (words)".into(), if v == 0 { "auto".to_string() } else { v.to_string() }, "")
+            }
             Row::FetchUrl => ("fetch_url tool".into(), on_off(app.cfg.fetch_url_enabled), "sites see your IP"),
             Row::Incognito => ("Incognito by default".into(), on_off(app.cfg.incognito_default), ""),
         };
@@ -707,13 +711,13 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         }
         Modal::Number(n) => {
             let title = match n.which {
-                Num::DefaultAgents => "Default agents (1–8)",
-                Num::MaxParallel => "Max parallel agents (1–8)",
-                Num::ReportWords => "Report length (words)",
+                Num::DefaultAgents => format!("Default agents (1–{MAX_AGENTS})"),
+                Num::MaxParallel => format!("Max parallel agents (1–{MAX_AGENTS})"),
+                Num::ReportWords => "Report words (0 = auto)".to_string(),
             };
             let r = centered(area, 44.min(area.width), 6);
             f.render_widget(Clear, r);
-            f.render_widget(modal_block(title), r);
+            f.render_widget(modal_block(&title), r);
             let inner = r.inner(Margin::new(1, 1));
             let [t, e] = Layout::vertical([Constraint::Length(3), Constraint::Length(1)]).areas(inner);
             n.ta.set_block(Block::bordered().border_type(BorderType::Rounded).border_style(muted()));

@@ -13,6 +13,9 @@ impl StageModel {
     }
 }
 
+/// Upper bound for the number of agents and for how many run at once.
+pub const MAX_AGENTS: u8 = 99;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -22,6 +25,7 @@ pub struct Config {
     pub synthesizer: StageModel,
     pub default_agents: u8,
     pub max_parallel: u8,
+    /// Target report length per researcher; 0 lets the model size each report to the problem.
     pub report_words: u32,
     pub max_turns: u32,
     pub compact_threshold_tokens: u64,
@@ -39,7 +43,7 @@ impl Default for Config {
             synthesizer: StageModel::new("high"),
             default_agents: 4,
             max_parallel: 3,
-            report_words: 1200,
+            report_words: 0,
             max_turns: 30,
             compact_threshold_tokens: 200_000,
             synth_input_budget_tokens: 120_000,
@@ -55,9 +59,11 @@ impl Config {
     }
 
     pub fn clamp(&mut self) {
-        self.default_agents = self.default_agents.clamp(1, 8);
-        self.max_parallel = self.max_parallel.clamp(1, 8);
-        self.report_words = self.report_words.max(100);
+        self.default_agents = self.default_agents.clamp(1, MAX_AGENTS);
+        self.max_parallel = self.max_parallel.clamp(1, MAX_AGENTS);
+        if self.report_words != 0 {
+            self.report_words = self.report_words.max(100);
+        }
         self.max_turns = self.max_turns.max(1);
     }
 
@@ -93,4 +99,19 @@ pub fn resolve_model(stage: &StageModel, catalog: &[String]) -> StageModel {
         catalog.first().cloned().unwrap_or_else(|| stage.model.clone())
     };
     StageModel { model, effort: stage.effort.clone() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_limits_agents_and_keeps_auto_length() {
+        let mut c = Config { default_agents: 200, max_parallel: 0, report_words: 0, ..Config::default() };
+        c.clamp();
+        assert_eq!((c.default_agents, c.max_parallel, c.report_words), (MAX_AGENTS, 1, 0));
+        c.report_words = 5;
+        c.clamp();
+        assert_eq!(c.report_words, 100);
+    }
 }

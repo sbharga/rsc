@@ -1,7 +1,7 @@
 use super::fmt::{self, expand_tilde, open_url, osc52_copy};
 use crate::api::{ApiError, Client, ErrKind, ModelInfo};
 use crate::auth::{self, Account, AuthError, AuthHandle, SignInUi, USAGE_URL};
-use crate::config::{Config, StageModel, resolve_model};
+use crate::config::{Config, MAX_AGENTS, StageModel, resolve_model};
 use crate::pricing::Pricing;
 use crate::research::store::{self, Perspective, Record, RunConfig, RunStatus, Source};
 use crate::research::{self, Ctx, Run, RunEvent};
@@ -976,7 +976,7 @@ impl App {
             KeyCode::Right => self.home.chip = (self.home.chip + 1).min(4),
             KeyCode::Esc => self.home.chips = false,
             KeyCode::Char('+') | KeyCode::Char('=') if self.home.chip == 0 => {
-                self.home.agents = (self.home.agents + 1).min(8)
+                self.home.agents = (self.home.agents + 1).min(MAX_AGENTS)
             }
             KeyCode::Char('-') if self.home.chip == 0 => self.home.agents = self.home.agents.saturating_sub(1).max(1),
             KeyCode::Char('m') => open_url(USAGE_URL),
@@ -987,7 +987,7 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Char(' ') => match self.home.chip {
                 0 if k.code == KeyCode::Enter => {
-                    self.home.agents = if self.home.agents >= 8 { 1 } else { self.home.agents + 1 }
+                    self.home.agents = if self.home.agents >= MAX_AGENTS { 1 } else { self.home.agents + 1 }
                 }
                 1..=3 if k.code == KeyCode::Enter => {
                     let stage = [Stage::Planner, Stage::Researcher, Stage::Synthesizer][self.home.chip - 1];
@@ -1033,8 +1033,8 @@ impl App {
                 }
             }
             KeyCode::Char('a') => {
-                if n >= 8 {
-                    self.toast("Maximum 8 angles");
+                if n >= MAX_AGENTS as usize {
+                    self.toast(format!("Maximum {MAX_AGENTS} angles"));
                 } else {
                     self.modal = Modal::Angle(Box::new(AngleEdit {
                         idx: None,
@@ -1583,11 +1583,11 @@ impl App {
                 };
                 match n.which {
                     Num::DefaultAgents => {
-                        self.cfg.default_agents = v.clamp(1, 8) as u8;
+                        self.cfg.default_agents = v.clamp(1, MAX_AGENTS as u32) as u8;
                         self.home.agents = self.cfg.default_agents;
                     }
-                    Num::MaxParallel => self.cfg.max_parallel = v.clamp(1, 8) as u8,
-                    Num::ReportWords => self.cfg.report_words = v.clamp(100, 20_000),
+                    Num::MaxParallel => self.cfg.max_parallel = v.clamp(1, MAX_AGENTS as u32) as u8,
+                    Num::ReportWords => self.cfg.report_words = if v == 0 { 0 } else { v.clamp(100, 20_000) },
                 }
                 self.save_cfg();
                 Modal::None
