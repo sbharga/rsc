@@ -2,6 +2,13 @@
 name = "rsc"
 version = "0.1.0"
 edition = "2024"
+description = "Multi-agent deep research in your terminal, powered by your ChatGPT plan"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sbharga/rsc"
+readme = "README.md"
+keywords = ["research", "tui", "chatgpt", "agents", "ratatui"]
+categories = ["command-line-utilities"]
+publish = false
 
 [dependencies]
 anyhow = "1"
