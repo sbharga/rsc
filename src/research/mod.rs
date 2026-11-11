@@ -1,5 +1,6 @@
 //! Research orchestration: planner → (review) → parallel researchers → synthesizer.
 
+pub mod sources;
 pub mod store;
 pub mod tools;
 
@@ -359,6 +360,10 @@ impl Run {
         self.persist();
     }
 
+    fn add_sources(&self, agent: Option<usize>, found: Vec<(String, String)>) {
+        self.with(|s| sources::merge(&mut s.record.sources, found, agent));
+    }
+
     fn add_usage(&self, scope: Scope, u: Usage) {
         self.with(|s| match scope {
             Scope::Planner => s.record.planner_usage += u,
@@ -444,6 +449,7 @@ impl Run {
                 .collect();
             s.activity = vec![String::new(); ps.len()];
             s.logs = vec![vec![]; ps.len()];
+            s.record.sources.clear();
             s.reports = vec![None; ps.len()];
             s.record.status = RunStatus::Researching;
             ps.len()
@@ -850,7 +856,7 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
         let mut req = ResponseRequest {
             model: sm.model.clone(),
             instructions: format!(
-                "You are one of several researchers working independently on the problem below. Your angle: {} — {}\nInvestigate as you see fit using the available tools. When finished, reply with a Markdown report of at most about {} words: key findings, evidence, open uncertainties, and the source URLs you relied on.",
+                "You are one of several researchers working independently on the problem below. Your angle: {} — {}\nInvestigate as you see fit using the available tools. When finished, reply with a Markdown report of at most about {} words: key findings, evidence, open uncertainties, and the sources you relied on as Markdown links [title](url).",
                 p.title, p.brief, cfg.report_words
             ),
             input: vec![user_msg(&brief)],
@@ -874,6 +880,13 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
                 .then(|| vec![json!({"type":"compaction","compact_threshold":cfg.compact_threshold_tokens})]);
             self.set_activity(idx, "thinking");
             let done = self.agent_call(&mut req, Some(&tx)).await?;
+            let found = [
+                sources::annotations(&done.output),
+                sources::links(&output_text(&done.output)),
+                sources::opened(&done.output),
+            ]
+            .concat();
+            self.add_sources(Some(idx), found);
             turns += 1;
             self.with(|s| s.record.agents[idx].turns = turns);
             self.add_usage(Scope::Agent(idx), done.usage);
@@ -915,8 +928,17 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
     // ---- synthesis ----
 
     async fn synthesize(self: &Arc<Self>) -> Result<String, ApiError> {
-        let (brief, cfg, agents, mem_reports) =
-            self.with(|s| (task_brief(&s.record), s.record.config.clone(), s.record.agents.clone(), s.reports.clone()));
+        let (brief, cfg, agents, mem_reports, list) = self.with(|s| {
+            // Drop synthesizer-only sources and citations from any previous attempt.
+            s.record.sources.retain(|x| !x.agents.is_empty());
+            for x in &mut s.record.sources {
+                x.in_final = false;
+            }
+            let list = sources::render_list(&s.record.sources, |x| {
+                x.agents.iter().any(|&i| s.record.agents.get(i).is_some_and(|a| a.status == AgentStatus::Done))
+            });
+            (task_brief(&s.record), s.record.config.clone(), s.record.agents.clone(), s.reports.clone(), list)
+        });
         let ok = agents.iter().filter(|a| a.status == AgentStatus::Done).count().max(1) as u64;
         let per_report = cfg.synth_input_budget_tokens / ok;
         let mut jobs = vec![];
@@ -943,11 +965,12 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
         for i in 0..agents.len() {
             self.set_activity(i, "");
         }
-        let input = format!("Problem:\n{brief}\n\n{}", parts.concat());
+        let block = if list.is_empty() { String::new() } else { format!("## Sources\n{list}") };
+        let input = format!("Problem:\n{brief}\n\n{}{block}", parts.concat());
         let sm = &cfg.synthesizer;
         let req = ResponseRequest {
             model: sm.model.clone(),
-            instructions: "Several researchers investigated the problem below from different angles. Combine their reports into one final answer in Markdown: integrate findings, resolve or flag conflicts, and cite sources inline. You may search the web to verify key claims.".into(),
+            instructions: "Several researchers investigated the problem below from different angles. Combine their reports into one final answer in Markdown: integrate findings and resolve or flag conflicts. Cite sources by their number from the Sources list in square brackets, e.g. [3] or [2, 5]. If you use a source that is not on the list, cite it as a Markdown link [title](url). Do not write your own sources or references section; one is added automatically. You may search the web to verify key claims.".into(),
             input: vec![user_msg(&input)],
             tools: vec![tools::web_search_tool()],
             effort: Some(sm.effort.clone()),
@@ -960,7 +983,17 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
         let done = self.call(&req, Some(&tx)).await?;
         self.add_usage(Scope::Synth, done.usage);
         let text = output_text(&done.output);
-        Ok(if text.trim().is_empty() { self.with(|s| s.synth_text.clone()) } else { text })
+        let text = if text.trim().is_empty() { self.with(|s| s.synth_text.clone()) } else { text };
+        let section = self.with(|s| {
+            sources::mark_cited(&mut s.record.sources, &text);
+            sources::merge(
+                &mut s.record.sources,
+                [sources::annotations(&done.output), sources::links(&text)].concat(),
+                None,
+            );
+            sources::render_list(&s.record.sources, |x| x.in_final)
+        });
+        Ok(if section.is_empty() { text } else { format!("{}\n\n## Sources\n\n{section}", text.trim_end()) })
     }
 }
 

@@ -26,6 +26,7 @@ CI runs `cargo fmt --check`, clippy and the tests on Ubuntu and macOS. All must 
 | `src/ui/fmt.rs` | Width-aware `trunc`, `pad` and `wrap` |
 | `src/research/mod.rs` | `Run` orchestration, planner/clarify loop, researchers, synthesis, live timelines |
 | `src/research/store.rs` | `Record`/`RunStatus` persistence and `progress` |
+| `src/research/sources.rs` | Source extraction, dedup, `[n]` citation parsing and numbered lists (pure) |
 | `src/research/tools.rs` | `web_search` and `fetch_url` tools |
 | `src/api/mod.rs` | Responses API client, SSE streaming, error classification, retry |
 | `src/api/sse.rs` | SSE parser |

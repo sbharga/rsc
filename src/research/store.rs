@@ -56,6 +56,19 @@ pub struct Perspective {
     pub brief: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Source {
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    /// 0-based indices of agents that cited or opened it, sorted, unique.
+    #[serde(default)]
+    pub agents: Vec<usize>,
+    /// Cited in the final report.
+    #[serde(default)]
+    pub in_final: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentRec {
     pub title: String,
@@ -134,6 +147,8 @@ pub struct Record {
     pub questions: Vec<String>,
     #[serde(default)]
     pub clarify_rounds: u8,
+    #[serde(default)]
+    pub sources: Vec<Source>,
 }
 
 pub fn new_id() -> String {
@@ -163,6 +178,7 @@ impl Record {
             clarifications: vec![],
             questions: vec![],
             clarify_rounds: 0,
+            sources: vec![],
         }
     }
 
@@ -364,11 +380,12 @@ mod tests {
     #[test]
     fn record_without_planner_fields_loads() {
         let mut v = serde_json::to_value(rec(&[])).unwrap();
-        for k in ["understanding", "planner_notes", "clarifications", "questions", "clarify_rounds"] {
+        for k in ["understanding", "planner_notes", "clarifications", "questions", "clarify_rounds", "sources"] {
             v.as_object_mut().unwrap().remove(k);
         }
         let r: Record = serde_json::from_value(v).unwrap();
         assert!(r.understanding.is_empty());
         assert_eq!(r.clarify_rounds, 0);
+        assert!(r.sources.is_empty());
     }
 }

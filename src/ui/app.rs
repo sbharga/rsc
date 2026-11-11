@@ -3,7 +3,7 @@ use crate::api::{ApiError, Client, ErrKind, ModelInfo};
 use crate::auth::{self, Account, AuthError, AuthHandle, SignInUi, USAGE_URL};
 use crate::config::{Config, StageModel, resolve_model};
 use crate::pricing::Pricing;
-use crate::research::store::{self, Perspective, Record, RunConfig, RunStatus};
+use crate::research::store::{self, Perspective, Record, RunConfig, RunStatus, Source};
 use crate::research::{self, Ctx, Run, RunEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Color, Style};
@@ -167,6 +167,7 @@ pub struct ViewTab {
     pub text: String,
     pub rendered: Text<'static>,
     pub agent: Option<usize>,
+    pub is_sources: bool,
 }
 
 pub struct Viewer {
@@ -177,6 +178,8 @@ pub struct Viewer {
     pub question: String,
     pub view_h: u16,
     pub max_scroll: u16,
+    pub sources: Vec<Source>,
+    pub src_sel: usize,
 }
 
 pub struct History {
@@ -338,6 +341,8 @@ impl App {
                 question: String::new(),
                 view_h: 10,
                 max_scroll: 0,
+                sources: vec![],
+                src_sel: 0,
             },
             history: History { items: vec![], filter: String::new(), filtering: false, sel: 0 },
             settings_sel: 0,
@@ -700,27 +705,48 @@ impl App {
 
     fn make_tab(label: String, text: String, agent: Option<usize>) -> ViewTab {
         let rendered = own_text(tui_markdown::from_str(&text));
-        ViewTab { label, text, rendered, agent }
+        ViewTab { label, text, rendered, agent, is_sources: false }
     }
 
-    fn open_viewer(&mut self, tabs: Vec<ViewTab>, tab: usize, back: Screen, question: String) {
+    fn sources_tab(sources: &[Source]) -> ViewTab {
+        ViewTab {
+            label: format!("Sources ({})", sources.len()),
+            text: format!("# Sources\n\n{}", research::sources::render_list(sources, |_| true)),
+            rendered: Text::default(),
+            agent: None,
+            is_sources: true,
+        }
+    }
+
+    fn open_viewer(
+        &mut self,
+        mut tabs: Vec<ViewTab>,
+        tab: usize,
+        back: Screen,
+        question: String,
+        sources: Vec<Source>,
+    ) {
         if tabs.is_empty() {
             self.toast("Nothing to show yet");
             return;
         }
-        self.viewer = Viewer { tabs, tab, scroll: 0, back, question, view_h: 10, max_scroll: 0 };
+        if !sources.is_empty() {
+            tabs.push(Self::sources_tab(&sources));
+        }
+        self.viewer = Viewer { tabs, tab, scroll: 0, back, question, view_h: 10, max_scroll: 0, sources, src_sel: 0 };
         self.screen = Screen::Viewer;
     }
 
     /// Viewer for the in-memory run; `agent` selects that agent's tab.
     pub fn open_run_viewer(&mut self, agent: Option<usize>, back: Screen) {
         let Some(run) = self.run.clone() else { return };
-        let (q, fin, titles, reports) = run.with(|s| {
+        let (q, fin, titles, reports, sources) = run.with(|s| {
             (
                 s.record.question.clone(),
                 s.final_report.clone(),
                 s.record.agents.iter().map(|a| a.title.clone()).collect::<Vec<_>>(),
                 s.reports.clone(),
+                s.record.sources.clone(),
             )
         });
         let mut tabs = vec![];
@@ -733,7 +759,7 @@ impl App {
             }
         }
         let sel = agent.and_then(|a| tabs.iter().position(|t| t.agent == Some(a))).unwrap_or(0);
-        self.open_viewer(tabs, sel, back, q);
+        self.open_viewer(tabs, sel, back, q, sources);
     }
 
     fn open_record_viewer(&mut self, rec: &Record) {
@@ -746,13 +772,15 @@ impl App {
                 tabs.push(Self::make_tab(a.title.clone(), r, Some(i)));
             }
         }
-        self.open_viewer(tabs, 0, Screen::History, rec.question.clone());
+        self.open_viewer(tabs, 0, Screen::History, rec.question.clone(), rec.sources.clone());
     }
 
     fn open_save(&mut self) {
         let Some(t) = self.viewer.tabs.get(self.viewer.tab) else { return };
         let mut name = research::slug(&self.viewer.question);
-        if let Some(i) = t.agent {
+        if t.is_sources {
+            name.push_str("-sources");
+        } else if let Some(i) = t.agent {
             name.push_str(&format!("-{}", i + 1));
         }
         let path = self.cwd.join(format!("{name}.md"));
@@ -1144,6 +1172,9 @@ impl App {
     }
 
     fn key_viewer(&mut self, k: KeyEvent) {
+        if self.viewer.tabs.get(self.viewer.tab).is_some_and(|t| t.is_sources) && self.key_sources(k) {
+            return;
+        }
         let v = &mut self.viewer;
         let page = v.view_h.saturating_sub(1).max(1);
         match k.code {
@@ -1179,6 +1210,34 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Keys specific to the Sources tab; returns false to fall through to the generic viewer keys.
+    fn key_sources(&mut self, k: KeyEvent) -> bool {
+        let v = &mut self.viewer;
+        let last = v.sources.len().saturating_sub(1);
+        let page = (v.view_h as usize / 2).max(1);
+        match k.code {
+            KeyCode::Up | KeyCode::Char('k') => v.src_sel = v.src_sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => v.src_sel = (v.src_sel + 1).min(last),
+            KeyCode::PageUp => v.src_sel = v.src_sel.saturating_sub(page),
+            KeyCode::PageDown | KeyCode::Char(' ') => v.src_sel = (v.src_sel + page).min(last),
+            KeyCode::Char('g') => v.src_sel = 0,
+            KeyCode::Char('G') => v.src_sel = last,
+            KeyCode::Enter | KeyCode::Char('o') => {
+                if let Some(s) = v.sources.get(v.src_sel) {
+                    open_url(&s.url);
+                }
+            }
+            KeyCode::Char('c') => {
+                if let Some(s) = v.sources.get(v.src_sel) {
+                    osc52_copy(&s.url);
+                    self.toast("URL copied");
+                }
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn key_history(&mut self, k: KeyEvent) {

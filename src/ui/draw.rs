@@ -135,6 +135,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Screen::Clarify => "Enter send (empty = skip) · Tab next · F1 help".to_string(),
         Screen::Review => "Enter launch · e edit · p re-plan · ? help".to_string(),
         Screen::Run => "↑/↓ agent · i inspect · Enter report · ? help".to_string(),
+        Screen::Viewer if app.viewer.tabs.get(app.viewer.tab).is_some_and(|t| t.is_sources) => {
+            "↑/↓ select · Enter open · c copy · Tab switch · ? help".to_string()
+        }
         Screen::Viewer => "j/k scroll · Tab/1–9 switch · s save · ? help".to_string(),
         Screen::History => if app.history.filtering {
             "type to filter · Enter keep · Esc clear"
@@ -444,12 +447,69 @@ fn draw_viewer(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), tabs_area);
 
     let Some(t) = v.tabs.get(v.tab) else { return };
+    if t.is_sources {
+        draw_sources(f, v, body);
+        return;
+    }
     let p = Paragraph::new(t.rendered.clone()).wrap(Wrap { trim: false });
     let lines = p.line_count(body.width);
     v.view_h = body.height;
     v.max_scroll = lines.saturating_sub(body.height as usize).min(u16::MAX as usize) as u16;
     v.scroll = v.scroll.min(v.max_scroll);
     f.render_widget(p.scroll((v.scroll, 0)), body);
+}
+
+fn draw_sources(f: &mut Frame, v: &mut Viewer, area: Rect) {
+    let [head, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    let n = v.sources.len();
+    let cited = v.sources.iter().filter(|s| s.in_final).count();
+    f.render_widget(
+        Paragraph::new(Span::styled(format!("{n} sources · {cited} cited in the final report"), muted())),
+        head,
+    );
+
+    v.view_h = list.height;
+    let per = (list.height as usize / 2).max(1);
+    v.src_sel = v.src_sel.min(n.saturating_sub(1));
+    let off = if v.src_sel >= per { v.src_sel + 1 - per } else { 0 };
+    let width = list.width as usize;
+    for (row, i) in (off..n.min(off + per)).enumerate() {
+        let s = &v.sources[i];
+        let y = list.y + 2 * row as u16;
+        if y >= list.y + list.height {
+            break;
+        }
+        let selected = i == v.src_sel;
+        let marker = if selected { "▸ " } else { "  " };
+        let num = format!("[{}] ", i + 1);
+        let mut tag = s.agents.iter().map(|a| format!("#{}", a + 1)).collect::<Vec<_>>().join(" ");
+        if s.in_final {
+            tag.push_str(if tag.is_empty() { "final" } else { " · final" });
+        }
+        let title = if s.title.is_empty() { crate::research::tools::host_of(&s.url) } else { one_line(&s.title) };
+        let room = width.saturating_sub(marker.width() + num.width() + tag.width() + 1);
+        let title_style = if selected { sel_style() } else { Style::new() };
+        let r1 = Rect::new(list.x, y, list.width, 1);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(marker, accent()),
+                Span::styled(num, accent()),
+                Span::styled(trunc(&title, room), title_style),
+            ])),
+            r1,
+        );
+        f.render_widget(Paragraph::new(Span::styled(tag, muted())).alignment(Alignment::Right), r1);
+        if y + 1 < list.y + list.height {
+            let r2 = Rect::new(list.x, y + 1, list.width, 1);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(trunc(&s.url, width.saturating_sub(6)), muted()),
+                ])),
+                r2,
+            );
+        }
+    }
 }
 
 fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
@@ -766,6 +826,8 @@ fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Tab/Shift+Tab", "switch tab"),
             ("1–9", "jump to tab"),
             ("s", "save"),
+            ("Enter/o", "open source (Sources tab)"),
+            ("c", "copy source URL (Sources tab)"),
             ("Esc", "back"),
         ],
         Screen::History => vec![

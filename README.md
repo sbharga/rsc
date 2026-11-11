@@ -11,7 +11,7 @@ You ask a question; rsc runs this pipeline:
 3. Researchers run in parallel, each with web search. They can optionally use `fetch_url`.
 4. A synthesizer writes a single cited Markdown report.
 
-The Run screen shows each agent's live timeline: reasoning summaries, searches, opened pages and the draft as it streams. Reports open in a viewer and can be saved as `.md`.
+The Run screen shows each agent's live timeline: reasoning summaries, searches, opened pages and the draft as it streams. Reports open in a viewer and can be saved as `.md`. The final report cites sources by number and ends with a `## Sources` list; a Sources tab in the viewer lists every URL the agents cited or opened (Enter opens it, `c` copies it).
 
 ## Requirements
 
