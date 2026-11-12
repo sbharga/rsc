@@ -31,7 +31,6 @@ pub struct Config {
     pub compact_threshold_tokens: u64,
     pub synth_input_budget_tokens: u64,
     pub fetch_url_enabled: bool,
-    pub incognito_default: bool,
     /// Check GitHub releases for a newer rsc on launch.
     pub check_updates: bool,
 }
@@ -50,7 +49,6 @@ impl Default for Config {
             compact_threshold_tokens: 200_000,
             synth_input_budget_tokens: 120_000,
             fetch_url_enabled: false,
-            incognito_default: false,
             check_updates: true,
         }
     }

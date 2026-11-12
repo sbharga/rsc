@@ -235,7 +235,6 @@ fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
     spans.extend(chip("Planner", stage(&h.planner), sel(1)));
     spans.extend(chip("Research", stage(&h.researcher), sel(2)));
     spans.extend(chip("Synth", stage(&h.synthesizer), sel(3)));
-    spans.extend(chip("Incognito", if h.incognito { "●" } else { "○" }.into(), sel(4)));
     let chips_full = Rect::new(area.x, chips.y, area.width, 1);
     f.render_widget(Paragraph::new(Line::from(spans)).alignment(Alignment::Center), chips_full);
 
@@ -550,17 +549,7 @@ fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(if selected { "▸ " } else { "  " }, accent()),
             Span::styled(pad(&date, 16), muted()),
             Span::raw("  "),
-            Span::styled(
-                pad(
-                    &if r.config.incognito {
-                        format!("[incognito] {}", one_line(&r.question))
-                    } else {
-                        one_line(&r.question)
-                    },
-                    qw,
-                ),
-                if selected { sel_style() } else { Style::new() },
-            ),
+            Span::styled(pad(&one_line(&r.question), qw), if selected { sel_style() } else { Style::new() }),
             Span::raw("  "),
             Span::styled(pad(r.status.label(), 12), status_style),
         ]);
@@ -592,7 +581,6 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 ("Report length (words)".into(), if v == 0 { "auto".to_string() } else { v.to_string() }, "")
             }
             Row::FetchUrl => ("fetch_url tool".into(), on_off(app.cfg.fetch_url_enabled), "sites see your IP"),
-            Row::Incognito => ("Incognito by default".into(), on_off(app.cfg.incognito_default), ""),
             Row::CheckUpdates => ("Check for updates".into(), on_off(app.cfg.check_updates), "on launch, via GitHub"),
         };
         let selected = i == app.settings_sel;

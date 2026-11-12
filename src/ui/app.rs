@@ -160,7 +160,6 @@ pub struct Home {
     pub planner: StageModel,
     pub researcher: StageModel,
     pub synthesizer: StageModel,
-    pub incognito: bool,
 }
 
 pub struct ViewTab {
@@ -197,11 +196,10 @@ pub enum Row {
     Model(Stage),
     Num(Num),
     FetchUrl,
-    Incognito,
     CheckUpdates,
 }
 
-pub const ROWS: [Row; 12] = [
+pub const ROWS: [Row; 11] = [
     Row::Account,
     Row::Usage,
     Row::Model(Stage::Planner),
@@ -212,7 +210,6 @@ pub const ROWS: [Row; 12] = [
     Row::Num(Num::MaxParallel),
     Row::Num(Num::ReportWords),
     Row::FetchUrl,
-    Row::Incognito,
     Row::CheckUpdates,
 ];
 
@@ -319,7 +316,6 @@ impl App {
             planner: cfg.planner.clone(),
             researcher: cfg.researcher.clone(),
             synthesizer: cfg.synthesizer.clone(),
-            incognito: cfg.incognito_default,
         };
         let mut app = App {
             cfg,
@@ -664,7 +660,6 @@ impl App {
             agents: self.home.agents,
             max_parallel: self.cfg.max_parallel,
             fetch_url: self.cfg.fetch_url_enabled,
-            incognito: self.home.incognito,
             report_words: self.cfg.report_words,
             max_turns: self.cfg.max_turns,
             compact_threshold_tokens: self.cfg.compact_threshold_tokens,
@@ -823,12 +818,8 @@ impl App {
         let mut items = store::list();
         if let Some(run) = &self.run {
             let (id, rec) = run.with(|s| (s.record.id.clone(), s.record.clone()));
-            if !rec.config.incognito {
-                if let Some(slot) = items.iter_mut().find(|r| r.id == id) {
-                    *slot = rec;
-                }
-            } else {
-                items.insert(0, rec);
+            if let Some(slot) = items.iter_mut().find(|r| r.id == id) {
+                *slot = rec;
             }
         }
         self.history.items = items;
@@ -992,7 +983,7 @@ impl App {
         }
         match k.code {
             KeyCode::Left => self.home.chip = self.home.chip.saturating_sub(1),
-            KeyCode::Right => self.home.chip = (self.home.chip + 1).min(4),
+            KeyCode::Right => self.home.chip = (self.home.chip + 1).min(3),
             KeyCode::Esc => self.home.chips = false,
             KeyCode::Char('+') | KeyCode::Char('=') if self.home.chip == 0 => {
                 self.home.agents = (self.home.agents + 1).min(MAX_AGENTS)
@@ -1019,7 +1010,6 @@ impl App {
                     });
                     self.picker_preselect();
                 }
-                4 => self.home.incognito = !self.home.incognito,
                 _ => {}
             },
             _ => {}
@@ -1382,11 +1372,6 @@ impl App {
                     self.cfg.fetch_url_enabled = !self.cfg.fetch_url_enabled;
                     self.save_cfg();
                 }
-                Row::Incognito => {
-                    self.cfg.incognito_default = !self.cfg.incognito_default;
-                    self.home.incognito = self.cfg.incognito_default;
-                    self.save_cfg();
-                }
                 Row::CheckUpdates => {
                     self.cfg.check_updates = !self.cfg.check_updates;
                     self.save_cfg();
@@ -1535,25 +1520,18 @@ impl App {
                             r.cancel();
                         }
                     }
-                    ConfirmKind::Delete(id) => {
-                        let in_memory = self
-                            .run
-                            .as_ref()
-                            .is_some_and(|r| r.with(|s| s.record.id == id && s.record.config.incognito));
-                        let res = if in_memory { Ok(()) } else { store::delete(&id) };
-                        match res {
-                            Ok(()) => {
-                                if self.run.as_ref().is_some_and(|r| r.with(|s| s.record.id == id)) {
-                                    self.run = None;
-                                }
-                                self.history.items.retain(|r| r.id != id);
-                                let n = self.history_visible().len();
-                                self.history.sel = self.history.sel.min(n.saturating_sub(1));
-                                self.toast("Deleted");
+                    ConfirmKind::Delete(id) => match store::delete(&id) {
+                        Ok(()) => {
+                            if self.run.as_ref().is_some_and(|r| r.with(|s| s.record.id == id)) {
+                                self.run = None;
                             }
-                            Err(e) => self.toast(format!("Delete failed: {e}")),
+                            self.history.items.retain(|r| r.id != id);
+                            let n = self.history_visible().len();
+                            self.history.sel = self.history.sel.min(n.saturating_sub(1));
+                            self.toast("Deleted");
                         }
-                    }
+                        Err(e) => self.toast(format!("Delete failed: {e}")),
+                    },
                     ConfirmKind::Overwrite { path, text } => self.do_save(path, &text),
                 }
                 Modal::None

@@ -108,7 +108,6 @@ pub struct RunConfig {
     pub agents: u8,
     pub max_parallel: u8,
     pub fetch_url: bool,
-    pub incognito: bool,
     pub report_words: u32,
     pub max_turns: u32,
     pub compact_threshold_tokens: u64,
@@ -219,29 +218,20 @@ impl Record {
         self.cost_partial = partial;
     }
 
-    /// Persist research.json unless incognito.
+    /// Persist research.json.
     pub fn save(&self) -> anyhow::Result<()> {
-        if self.config.incognito {
-            return Ok(());
-        }
         let d = self.dir();
         paths::create_private_dir(&d)?;
         paths::atomic_write(&d.join("research.json"), &serde_json::to_vec_pretty(self)?)
     }
 
     pub fn write_agent_report(&self, idx: usize, text: &str) -> anyhow::Result<()> {
-        if self.config.incognito {
-            return Ok(());
-        }
         let d = self.dir().join("agents");
         paths::create_private_dir(&d)?;
         paths::atomic_write(&d.join(format!("{}.md", idx + 1)), text.as_bytes())
     }
 
     pub fn write_final(&self, text: &str) -> anyhow::Result<()> {
-        if self.config.incognito {
-            return Ok(());
-        }
         paths::create_private_dir(&self.dir())?;
         paths::atomic_write(&self.dir().join("report.md"), text.as_bytes())
     }
@@ -330,7 +320,6 @@ mod tests {
             agents: 4,
             max_parallel: 3,
             fetch_url: false,
-            incognito: true,
             report_words: 1,
             max_turns: 1,
             compact_threshold_tokens: 1,

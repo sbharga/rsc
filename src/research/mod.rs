@@ -65,7 +65,7 @@ pub struct RunState {
     pub activity: Vec<String>,
     pub synth_text: String,
     pub final_report: Option<String>,
-    /// In-memory agent reports (the only copy for incognito runs).
+    /// In-memory agent reports.
     pub reports: Vec<Option<String>>,
     pub error: Option<ApiError>,
     /// Live timelines (memory only; a resumed run starts empty).
@@ -276,7 +276,7 @@ impl Run {
         run
     }
 
-    /// `mem` carries in-memory agent reports (needed to resume incognito runs without redoing finished agents).
+    /// `mem` carries in-memory agent reports from the live run; they are used before disk so a report whose write failed is not redone.
     pub fn resume(ctx: Ctx, record: Record, mem: Vec<Option<String>>) -> Arc<Run> {
         let status = record.status;
         let run = Run::new(ctx, record);

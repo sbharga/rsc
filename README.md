@@ -76,8 +76,7 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `research/<id>/agents/<n>.md` | Per-agent reports |
 | `research/<id>/report.md` | Final report |
 
-- Incognito runs write nothing under `research/`.
-- API requests are sent with `store: false`.
+- API requests are sent with `store: false`. Whether OpenAI may train on your data is set by your ChatGPT account's Data Controls.
 - `fetch_url` is off by default. When enabled, it downloads any http(s) URL the model picks, from your machine. That can include addresses on your local network.
 - Unless `check_updates` is off, each launch sends one unauthenticated request to `api.github.com` to check for releases.
 
@@ -98,7 +97,6 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `compact_threshold_tokens` | `200000` | |
 | `synth_input_budget_tokens` | `120000` | |
 | `fetch_url_enabled` | `false` | |
-| `incognito_default` | `false` | |
 | `check_updates` | `true` | Check GitHub for a newer release on launch |
 
 Most of these are editable in Settings (`Ctrl+O`). If `config.toml` is invalid, rsc falls back to the defaults and shows a banner.
