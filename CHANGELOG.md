@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.0.4
+
+- Headless commands: `rsc run`, `rsc resume`, `rsc ls` and `rsc show`, with `--yes`, `--no-clarify`, `-o` and `--json`. Exit codes: 0 done, 1 failed, 2 budget hit, 130 cancelled.
+- Researchers checkpoint their progress after every turn; resume continues where an agent stopped.
+- An agent restarts once after a retryable failure (at most 3 restarts per run).
+- `RSC_API_BASE` and `RSC_BACKOFF_MS` environment overrides for testing against a mock API.
+- End-to-end tests drive the real binary against a scripted mock API.
+- `research/mod.rs` and `ui/app.rs` split into smaller modules.
+
 ## 0.0.3
 
 - `fetch_url` blocks private, loopback, link-local and CGNAT addresses, also via redirects (max 5) and DNS, and ignores system proxies.
