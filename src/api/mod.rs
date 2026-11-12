@@ -6,12 +6,29 @@ use crate::auth::{AuthError, AuthHandle};
 use crate::pricing::Usage;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
-const API_BASE: &str = "https://api.openai.com/v1";
+const DEFAULT_API_BASE: &str = "https://api.openai.com/v1";
+
+/// `RSC_API_BASE` (read once; used by tests and local mocks) or the OpenAI endpoint.
+static API_BASE: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("RSC_API_BASE")
+        .ok()
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_API_BASE.to_string())
+});
+
+static BACKOFF_MS: LazyLock<u64> =
+    LazyLock::new(|| std::env::var("RSC_BACKOFF_MS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(1000));
+
+/// Milliseconds per backoff "second": `RSC_BACKOFF_MS` (read once), default 1000.
+pub fn backoff_ms() -> u64 {
+    *BACKOFF_MS
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrKind {
@@ -198,7 +215,7 @@ impl Client {
         loop {
             let r = self
                 .http
-                .get(format!("{API_BASE}/models"))
+                .get(format!("{}/models", API_BASE.as_str()))
                 .bearer_auth(&token)
                 .timeout(Duration::from_secs(30))
                 .send()
@@ -226,7 +243,8 @@ impl Client {
         cancel: &CancellationToken,
         token: &str,
     ) -> Result<Completed, ApiError> {
-        let send = self.http.post(format!("{API_BASE}/responses")).bearer_auth(token).json(&req.body()).send();
+        let send =
+            self.http.post(format!("{}/responses", API_BASE.as_str())).bearer_auth(token).json(&req.body()).send();
         let resp = tokio::select! {
             _ = cancel.cancelled() => return Err(ApiError::cancelled()),
             r = send => r.map_err(Self::net)?,
@@ -327,7 +345,7 @@ impl Client {
                         }
                         tokio::select! {
                             _ = cancel.cancelled() => return Err(ApiError::cancelled()),
-                            _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                            _ = tokio::time::sleep(Duration::from_millis(delay * backoff_ms())) => {}
                         }
                         // token may have expired during a long outage
                         token = self.auth.access_token().await?;

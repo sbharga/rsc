@@ -2,8 +2,9 @@ use crate::api::ApiError;
 use crate::config::StageModel;
 use crate::paths;
 use crate::pricing::{Pricing, Usage};
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -298,6 +299,37 @@ impl Record {
     }
 }
 
+/// `agents/<n>.state.json`: a researcher's input items after its last finished turn.
+#[derive(Deserialize)]
+pub struct AgentState {
+    pub turns: u32,
+    pub input: Vec<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct AgentStateOut<'a> {
+    turns: u32,
+    input: &'a [serde_json::Value],
+}
+
+fn agent_state_path(dir: &Path, idx: usize) -> PathBuf {
+    dir.join("agents").join(format!("{}.state.json", idx + 1))
+}
+
+pub fn write_agent_state(dir: &Path, idx: usize, turns: u32, input: &[serde_json::Value]) -> anyhow::Result<()> {
+    paths::create_private_dir(&dir.join("agents"))?;
+    paths::atomic_write(&agent_state_path(dir, idx), &serde_json::to_vec(&AgentStateOut { turns, input })?)
+}
+
+/// Missing or unparsable = no checkpoint.
+pub fn read_agent_state(dir: &Path, idx: usize) -> Option<AgentState> {
+    serde_json::from_slice(&std::fs::read(agent_state_path(dir, idx)).ok()?).ok()
+}
+
+pub fn remove_agent_state(dir: &Path, idx: usize) {
+    let _ = std::fs::remove_file(agent_state_path(dir, idx));
+}
+
 /// Load all persisted runs, newest first.
 pub fn list() -> Vec<Record> {
     let mut v: Vec<Record> = std::fs::read_dir(paths::research_dir())
@@ -327,9 +359,21 @@ pub fn mark_interrupted() {
     }
 }
 
+/// Never let an id escape the research dir.
+fn check_id(id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!id.is_empty() && !id.contains(['/', '\\']) && id != "." && id != "..", "Invalid research id.");
+    Ok(())
+}
+
+pub fn load(id: &str) -> anyhow::Result<Record> {
+    check_id(id)?;
+    let path = paths::research_dir().join(id).join("research.json");
+    let s = std::fs::read_to_string(&path).with_context(|| format!("No research with id {id}."))?;
+    Ok(serde_json::from_str(&s)?)
+}
+
 pub fn delete(id: &str) -> anyhow::Result<()> {
-    // id comes from our own listing, but never let it escape the research dir
-    anyhow::ensure!(!id.is_empty() && !id.contains(['/', '\\']) && id != "." && id != "..", "bad id");
+    check_id(id)?;
     std::fs::remove_dir_all(paths::research_dir().join(id))?;
     Ok(())
 }
@@ -362,6 +406,20 @@ pub fn progress(r: &Record, synth_chars: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_state_round_trips_and_is_removable() {
+        let dir = std::env::temp_dir().join(format!("rsc-test-{}", uuid::Uuid::new_v4()));
+        assert!(read_agent_state(&dir, 1).is_none());
+        let input = vec![serde_json::json!({"type":"message","role":"user"}), serde_json::json!({"k": [1, 2]})];
+        write_agent_state(&dir, 1, 4, &input).unwrap();
+        assert!(dir.join("agents/2.state.json").exists());
+        let st = read_agent_state(&dir, 1).unwrap();
+        assert_eq!((st.turns, st.input), (4, input));
+        remove_agent_state(&dir, 1);
+        assert!(read_agent_state(&dir, 1).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn rec(statuses: &[(AgentStatus, u32)]) -> Record {
         let sm = StageModel { model: "m".into(), effort: "low".into() };

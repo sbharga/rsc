@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod cli;
 mod config;
 mod paths;
 mod pricing;
@@ -9,13 +10,18 @@ mod update;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    match std::env::args().nth(1).as_deref() {
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
         None => ui::run().await,
         Some("--version") => {
             println!("rsc {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Some("update") => update::run().await,
-        Some(_) => anyhow::bail!("usage: rsc [--version | update]"),
+        Some("run" | "resume" | "ls" | "show") => {
+            let code = cli::main(&args[1..]).await?;
+            std::process::exit(code)
+        }
+        Some(_) => anyhow::bail!("{}", cli::USAGE),
     }
 }

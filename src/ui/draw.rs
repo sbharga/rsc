@@ -573,7 +573,7 @@ fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
             filter,
         );
     }
-    let items = app.history_visible();
+    let items = app.history.visible();
     if items.is_empty() {
         f.render_widget(
             Paragraph::new(Span::styled("No research yet", muted())).alignment(Alignment::Center),

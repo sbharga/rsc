@@ -1,6 +1,6 @@
 mod app;
 mod draw;
-mod fmt;
+pub(crate) mod fmt;
 
 use crate::config::Config;
 use crate::pricing::Pricing;

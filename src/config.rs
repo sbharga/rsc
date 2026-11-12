@@ -1,4 +1,5 @@
 use crate::paths;
+use crate::research::store::RunConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -76,6 +77,33 @@ impl Config {
         }
         self.max_turns = self.max_turns.max(1);
         self.max_run_cost_usd = self.max_run_cost_usd.max(0.0);
+    }
+
+    /// Per-run settings: the given stage models and agent count, the rest copied from this config.
+    pub fn run_config(
+        &self,
+        planner: StageModel,
+        researcher: StageModel,
+        compactor: StageModel,
+        synthesizer: StageModel,
+        agents: u8,
+    ) -> RunConfig {
+        RunConfig {
+            planner,
+            researcher,
+            compactor,
+            synthesizer,
+            agents,
+            max_parallel: self.max_parallel,
+            fetch_url: self.fetch_url_enabled,
+            report_words: self.report_words,
+            max_turns: self.max_turns,
+            compact_threshold_tokens: self.compact_threshold_tokens,
+            synth_input_budget_tokens: self.synth_input_budget_tokens,
+            report_style: self.report_style.trim().to_string(),
+            max_run_tokens: self.max_run_tokens,
+            max_run_cost_usd: self.max_run_cost_usd,
+        }
     }
 
     /// Returns (config, optional error banner).

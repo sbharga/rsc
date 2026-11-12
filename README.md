@@ -64,6 +64,19 @@ Global keys:
 | `Ctrl+U` | Manage usage |
 | `Ctrl+C` | Quit |
 
+## Headless use
+
+```sh
+rsc run "<question>" [--agents N] [--yes] [--no-clarify] [-o FILE] [--json]
+rsc resume <id> [--yes] [--no-clarify] [-o FILE] [--json]
+rsc ls
+rsc show <id>
+```
+
+`rsc run` works without a terminal. Progress goes to stderr and the report to stdout (or to `-o FILE`). Without a terminal on stdin and stderr, clarifying questions are skipped and `--yes` is required to accept the plan; in a terminal, rsc asks. `--json` prints a summary object on stdout instead of the report. `rsc resume` continues a failed, cancelled or interrupted run; don't resume a run that is still open in another rsc.
+
+Exit codes: `0` done, `1` failed or usage error, `2` done but a budget cap stopped research early, `130` cancelled (Ctrl+C or declining the plan).
+
 ## Follow-up chat
 
 On a finished research's report (after it completes, or from History with `Ctrl+R`), press `a` to ask follow-up questions. Answers stream in, may use web search, and are saved per research, so reopening it continues the conversation. Chat cost is shown on the chat screen and is not added to the research's total.
@@ -80,6 +93,7 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `pricing.toml` | Cost-estimate rates, seeded on first run |
 | `research/<id>/research.json` | Run record |
 | `research/<id>/agents/<n>.md` | Per-agent reports |
+| `research/<id>/agents/<n>.state.json` | Researcher progress for resume; removed when the agent finishes or fails |
 | `research/<id>/report.md` | Final report |
 | `research/<id>/chat.json` | Follow-up chat |
 

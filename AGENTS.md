@@ -19,12 +19,18 @@ CI runs `cargo fmt --check`, clippy and the tests on Ubuntu and macOS. All must 
 
 | File | Role |
 |---|---|
-| `src/main.rs` | Entry point and `--version` |
+| `src/main.rs` | Entry point, `--version`, command dispatch |
+| `src/cli.rs` | Headless `rsc run`, `resume`, `ls`, `show` (no ratatui) |
+| `tests/` | End-to-end tests: real binary against a scripted SSE mock (`tests/support/mod.rs`) |
 | `src/ui/mod.rs` | Terminal setup and event loop (key, paste, `AppMsg`, `RunEvent`, 100 ms tick) |
-| `src/ui/app.rs` | `App` state, screens, modals, key handling |
+| `src/ui/app.rs` | `App` state, type definitions, startup, messages, run lifecycle, key routing (`on_key`, `on_paste`) |
+| `src/ui/app/*.rs` | One file per screen's key handling (`signin`, `home`, `review`, `clarify`, `run`, `viewer`, `history`, `settings`, `chat`) plus `modals`; pure state transitions with unit tests (`History::filter_key`, `Viewer::nav_key`, `upsert_angle`, `Num::clamp`) |
 | `src/ui/draw.rs` | Rendering only, plus the `help_entries` and footer strings |
 | `src/ui/fmt.rs` | Width-aware `trunc`, `pad` and `wrap` |
-| `src/research/mod.rs` | `Run` orchestration, planner/clarify loop, researchers, synthesis, live timelines |
+| `src/research/mod.rs` | `Run` state and lifecycle (start, resume, cancel, fail, launch), API call plumbing, live timelines |
+| `src/research/plan.rs` | Planner/clarify loop, `parse_plan` |
+| `src/research/agent.rs` | Researchers: parallel `drive`, `run_agent` loop, per-agent checkpoints, restarts, compaction |
+| `src/research/synth.rs` | Final synthesis and report condensing |
 | `src/research/store.rs` | `Record`/`RunStatus` persistence and `progress` |
 | `src/research/sources.rs` | Source extraction, dedup, `[n]` citation parsing and numbered lists (pure) |
 | `src/research/tools.rs` | `web_search` and `fetch_url` tools |
@@ -49,10 +55,9 @@ CI runs `cargo fmt --check`, clippy and the tests on Ubuntu and macOS. All must 
 
 - Unit tests live in inline `#[cfg(test)] mod tests` blocks next to the code. Test pure helpers such as `parse_plan`, `append_log`, `classify` and `ResponseRequest::body`. Tests must not touch the network or `~/.rsc`.
 - To check UI changes end to end:
-  1. Temporarily point `API_BASE` in `src/api/mod.rs` at a local SSE mock that serves `GET /models` and `POST /responses`.
+  1. Set `RSC_API_BASE=http://127.0.0.1:<port>/v1` to a local SSE mock that serves `GET /models` and `POST /responses`. `RSC_BACKOFF_MS` scales retry delays.
   2. Run with `HOME` set to a scratch directory that holds a fake `~/.rsc/accounts/<id>.json` and `state.json`. `<id>` is `account_id(client_id)`, the first 12 hex characters of sha256.
   3. Drive the binary with `tmux send-keys` / `tmux capture-pane`.
-  4. Revert the `API_BASE` change before committing.
 
 ## Style
 
