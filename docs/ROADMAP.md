@@ -1,6 +1,6 @@
 # Roadmap
 
-State at v0.0.3: the pipeline (plan → clarify → review → research → synthesize), live agent timelines, source tracking with `[n]` citations, follow-up chat, resume, history, cost estimates, installer and self-update all work. Phase 0 (safety and trust) shipped in 0.0.3: `fetch_url` is SSRF-guarded, the updater is pinned to the release tag, and runs can be capped by tokens or cost. Single binary, Linux and macOS, ChatGPT sign-in only.
+State at v0.0.4: the pipeline (plan → clarify → review → research → synthesize), live agent timelines, source tracking with `[n]` citations, follow-up chat, resume, history, cost estimates, installer and self-update all work. Phase 0 (safety and trust) shipped in 0.0.3: `fetch_url` is SSRF-guarded, the updater is pinned to the release tag, and runs can be capped by tokens or cost. Phase 1 (foundations) shipped in 0.0.4: headless `rsc run`/`resume`/`ls`/`show`, a mock API with end-to-end tests, agent checkpoints and restarts, and the large files split. Single binary, Linux and macOS, ChatGPT sign-in only.
 
 This document orders the next work by when it should be done and why. Order follows three rules:
 
@@ -15,7 +15,7 @@ Sizes: **S** ≤ 1 day, **M** 2–5 days, **L** > 1 week. Phases are ordered; it
 | # | Phase | Target | Theme | Gate to leave the phase |
 |---|---|---|---|---|
 | 0 | Safety and trust | 0.0.3 (done) | Close known holes | `fetch_url` cannot reach private addresses; updater pinned to the release tag; run budget cap works |
-| 1 | Foundations | 0.1.0 | Testability, headless mode, resilience | A full run is exercised in `cargo test` against a mock API; `rsc run` works with no TTY |
+| 1 | Foundations | 0.0.4 (done) | Testability, headless mode, resilience | A full run is exercised in `cargo test` against a mock API; `rsc run` works with no TTY |
 | 2 | Report quality | 0.2.0 | Make the output measurably better | Eval suite shows citation validity and coverage improving release over release |
 | 3 | Workflow | 0.3.0 | Export, search, presets, local context | Users can get a report out of rsc and into other tools without copy-paste |
 | 4 | Distribution | 0.4.0 | Windows, packaging, supply chain | Install works without a C toolchain; signed artifacts |
@@ -43,48 +43,22 @@ Carried over:
 
 ---
 
-## Phase 1 — Foundations (0.1.0)
+## Phase 1 — Foundations (0.0.4) — done
 
-Nothing user-visible except `rsc run`. This phase is what makes every later phase safe to build.
+Shipped in 0.0.4; see `CHANGELOG.md`.
 
-### 1.1 Mock API and end-to-end tests — M
-**Problem.** AGENTS.md documents verifying UI changes by editing `API_BASE` by hand, running a mock, and reverting. That is the highest-leverage test fixture in the repo and it is manual. There are 42 unit tests, none in `auth`, `paths`, or `ui`, and none that run the pipeline. `research/tools.rs` already has a small local test server (`serve`) that the mock can build on.
+| Item | What shipped |
+|---|---|
+| 1.1 Mock API and e2e tests | `RSC_API_BASE` overrides the API base and `RSC_BACKOFF_MS` scales retry delays. `tests/support` is a scripted SSE mock; `tests/e2e.rs` spawns the real binary against it with a scratch `HOME`. Covers the happy path, a failed researcher, usage limit, cancel, resume, capability degradation, 5xx retry, budget cap, checkpoints and restarts. |
+| 1.2 Headless mode | `rsc run`, `resume`, `ls` and `show` in `src/cli.rs` with `--yes`, `--no-clarify`, `-o` and `--json`. Progress on stderr, report on stdout. Exit codes 0 done, 1 failed, 2 budget hit, 130 cancelled. Prompts only when stdin and stderr are terminals. |
+| 1.3 Agent resilience | Per-agent checkpoints in `agents/<n>.state.json`; resume continues from the last finished turn. One automatic restart per agent after a retryable failure (15–30 s delay), at most 3 per run. `UsageLimit` still fails the run. |
+| 1.4 File split | `research/mod.rs` split into `plan.rs`, `agent.rs` and `synth.rs`; `ui/app.rs` split into one file per screen under `src/ui/app/`. Pure transitions (`History::filter_key`, `Viewer::nav_key`, `upsert_angle`, `Num::clamp`) have unit tests. |
 
-**Change.**
-- Make the API base overridable (env var read once at startup, honored in all builds, or a constructor argument on `Client`). No `cfg(test)`-only hack; integration tests live outside the crate's `src/`.
-- Ship a scripted SSE mock (a `tests/support` module with a tokio server): serves `/models` and `/responses`, replays fixture streams including a `function_call`, a 5xx, a `subscription_sharing_usage_limit_exceeded`, and a rejected optional capability.
-- First tests: happy path to `Done`; one researcher fails and the run still synthesizes; usage limit fails the run; cancel mid-run; resume from `Interrupted` skips finished agents; capability degradation (reasoning summary, `context_management`, `fetch_url` namespace) retries without the field.
+Carried over:
 
-**Done when.** `cargo test` drives a full run on both CI OSes with no network.
-
-### 1.2 Headless mode: `rsc run` — M
-**Problem.** `Run` is already UI-independent (it speaks `RunEvent` and shared state through `Run::with`), but the only front end is the TUI. No scripting, no CI, no eval.
-
-**Change.**
-- `rsc run "<question>" [--agents N] [--yes] [--no-clarify] [-o report.md] [--json]`. Planner clarification is skipped unless an answer source is given. `--yes` auto-accepts the plan.
-- Progress to stderr only when stderr is not the TUI (the "never print while TUI runs" rule does not apply here; keep the two paths separate).
-- Exit codes: 0 done, 1 failed, 2 budget hit, 130 cancelled.
-- Also `rsc ls` and `rsc show <id>` since they need no new logic (`store::list`).
-
-**Why now.** Required by 1.1 (drive tests), 2.1 (eval) and 3.x (scripting).
-
-### 1.3 Agent-level resilience — M
-**Problem.**
-- `Run::resume` resets a non-done agent to `Pending` with `turns = 0`; all of its research is lost. Interrupted runs (laptop sleep, crash) pay full cost again.
-- A single transient failure that exhausts `call_with_retry` (3 tries, 2/4/8 s) permanently fails that agent for the run.
-
-**Change.**
-- Checkpoint each agent's input items to `research/<id>/agents/<n>.state.json` after every turn (atomic write, mode 0600, trimmed after compaction). Resume continues from the checkpoint. Add the file to the README data table.
-- Automatic one-shot restart of an agent after a retryable failure, with jittered backoff longer than 8 s. Cap total restarts per run.
-- Keep the `UsageLimit` behavior: fail the whole run, since further agents cannot succeed.
-
-### 1.4 Split the two large files — M
-`src/ui/app.rs` is 1,867 lines and `src/research/mod.rs` is 1,154. Phases 2 and 3 add screens and orchestration steps; adding them to these files will make review and testing worse.
-
-- `research/mod.rs` → `plan.rs` (planner/clarify loop, `parse_plan`), `agent.rs` (`run_agent`, compaction), `synth.rs` (synthesis, condense), keeping `Run`/`RunState` in `mod.rs`.
-- `ui/app.rs` → one module per screen for key handling (`home`, `review`, `run`, `viewer`, `history`, `settings`, `chat`), `app.rs` keeps shared state and routing.
-- Pure move, no behavior change, one commit, tests green before and after.
-- Extract pure state transitions (selection, filtering, edit buffers) out of key handlers so they can be unit tested; this is where `ui` has zero coverage today.
+- **Live smoke script.** Mock fixtures are hand-written; record real responses and run a manual live check before each release (see Standing risks).
+- **Headless prompts have no automated test.** They need a TTY; verified by hand in tmux.
+- **`rsc resume` on a run open in another rsc** is not guarded; the README says not to.
 
 ---
 
