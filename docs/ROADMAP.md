@@ -1,6 +1,6 @@
 # Roadmap
 
-State at v0.0.4: the pipeline (plan → clarify → review → research → synthesize), live agent timelines, source tracking with `[n]` citations, follow-up chat, resume, history, cost estimates, installer and self-update all work. Phase 0 (safety and trust) shipped in 0.0.3: `fetch_url` is SSRF-guarded, the updater is pinned to the release tag, and runs can be capped by tokens or cost. Phase 1 (foundations) shipped in 0.0.4: headless `rsc run`/`resume`/`ls`/`show`, a mock API with end-to-end tests, agent checkpoints and restarts, and the large files split. Single binary, Linux and macOS, ChatGPT sign-in only.
+State at v0.0.4: the pipeline (plan → clarify → review → research → synthesize), live agent timelines, source tracking with `[n]` citations, follow-up chat, resume, history, cost estimates, installer and self-update all work. Phase 0 (safety and trust) shipped in 0.0.3: `fetch_url` is SSRF-guarded, the updater is pinned to the release tag, and runs can be capped by tokens or cost. Phase 1 (foundations) shipped in 0.0.4: headless `rsc run`/`resume`/`ls`/`show`, a mock API with end-to-end tests, agent checkpoints and restarts, and the large files split. Single binary, Linux and macOS, ChatGPT sign-in only. Next is Phase 2 (report quality), starting with the eval harness.
 
 This document orders the next work by when it should be done and why. Order follows three rules:
 
@@ -57,6 +57,7 @@ Shipped in 0.0.4; see `CHANGELOG.md`.
 Carried over:
 
 - **Live smoke script.** Mock fixtures are hand-written; record real responses and run a manual live check before each release (see Standing risks).
+- **CI toolchain drift.** CI builds with floating `stable`, and the first 0.0.4 push failed clippy on a method deprecated after the local toolchain (`fetch_update` → `try_update`). The `v0.0.4` tag was moved once to the fixed commit. Before tagging a release, check that CI is green on the exact commit, or pin the toolchain in `ci.yml` and bump it deliberately.
 - **Headless prompts have no automated test.** They need a TTY; verified by hand in tmux.
 - **`rsc resume` on a run open in another rsc** is not guarded; the README says not to.
 
@@ -93,7 +94,7 @@ The product's value is the report. Measure first, then change.
 ### 2.5 Gap-filling round — L
 After the first reports, a reviewer step lists unanswered sub-questions and contradictions, and the user (Review-style screen) or `--auto` approves a second round of 1–N targeted agents before synthesis.
 - Adds a `RunStatus` variant. Older binaries will not parse new `research.json` status values; note it in the changelog. New `Record` fields get `#[serde(default)]`.
-- Needs 1.4 (so it does not bloat `research/mod.rs`) and 0.4 (so the extra round obeys the budget).
+- Needs 1.4 (done; the extra round goes in the split modules rather than bloating `research/mod.rs`) and 0.4 (so the extra round obeys the budget).
 - Do it last in this phase; it is the largest change and the eval harness will show whether it earns its cost.
 
 ---
@@ -120,7 +121,7 @@ Planner, researcher, synthesizer and chat instructions are `const` strings (e.g.
 `rsc run --context path` / a Home action to attach local `.md`, `.txt` or PDF files (reuse the `pdf-extract` path in `tools.rs`). Content becomes part of the task brief and is cited as `[local: name]`. This is a privacy-relevant change: show the attached files on the Review screen and state that they are sent to the model.
 
 ### 3.6 Chat that can dig deeper — M
-Let a follow-up chat answer say "this needs new research" and, on user confirmation, launch one or more extra agents and fold the result into the report as a new section or a new revision (`report.v2.md`). Reuses `Run::drive`. Depends on 1.4 and 2.5's round mechanism.
+Let a follow-up chat answer say "this needs new research" and, on user confirmation, launch one or more extra agents and fold the result into the report as a new section or a new revision (`report.v2.md`). Reuses `Run::drive`. Depends on 2.5's round mechanism (1.4 is done).
 
 ---
 
@@ -158,11 +159,12 @@ Do not start these before phases 0–2 are done; they widen the surface the earl
 
 | Risk | Why it matters | Mitigation |
 |---|---|---|
-| The ChatGPT-plan Responses API is not a documented public contract [INFERENCE: based on the `subscription_sharing_*` error codes handled in `src/api/mod.rs`] | Behavior can change without notice and break every run | Keep degradation paths for optional fields (AGENTS.md invariant); mock fixtures in 1.1 should encode observed real responses; add a manual live smoke script run before each release |
+| The ChatGPT-plan Responses API is not a documented public contract [INFERENCE: based on the `subscription_sharing_*` error codes handled in `src/api/mod.rs`] | Behavior can change without notice and break every run | Keep degradation paths for optional fields (AGENTS.md invariant); mock fixtures (1.1, shipped) are hand-written and should be updated to encode observed real responses; add a manual live smoke script run before each release |
 | Plan usage exhaustion | Parallel agents spend a shared allowance quickly | 0.4 budget cap, pre-run estimate, headless exit code 2 |
 | Prompt injection through fetched or searched pages | Model output steers tool calls | 0.1, 0.3; keep tools read-only; no tool should write to disk or run commands |
 | Local data under `~/.rsc` includes questions and reports | Sensitive by nature | Existing 0700/0600 + atomic writes; export (3.1) writes where the user says, never implicitly; no telemetry (see below) |
-| Large-file drift | `app.rs` and `research/mod.rs` already dominate review effort | 1.4 before phases 2–3 |
+| CI toolchain drift | Floating `stable` can fail clippy on a commit that passed locally, as happened for 0.0.4 | Check CI on the release commit before tagging; consider pinning the toolchain |
+| Large-file drift | `app.rs` and `research/mod.rs` already dominate review effort | 1.4 shipped in 0.0.4; add phase 2–3 code to the split modules (`plan.rs`, `agent.rs`, `synth.rs`, `src/ui/app/`), not back into `mod.rs` / `app.rs` |
 
 ## Proposed non-goals
 
