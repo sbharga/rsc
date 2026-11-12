@@ -753,6 +753,8 @@ impl App {
             compact_threshold_tokens: self.cfg.compact_threshold_tokens,
             synth_input_budget_tokens: self.cfg.synth_input_budget_tokens,
             report_style: self.cfg.report_style.trim().to_string(),
+            max_run_tokens: self.cfg.max_run_tokens,
+            max_run_cost_usd: self.cfg.max_run_cost_usd,
         };
         self.run = Some(Run::start(ctx, q, rc));
         self.home.input.select_all();

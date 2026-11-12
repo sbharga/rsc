@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::time::Duration;
 
 const RELEASES_URL: &str = "https://api.github.com/repos/sbharga/rsc/releases?per_page=20";
-const INSTALL_URL: &str = "https://raw.githubusercontent.com/sbharga/rsc/master/install.sh";
+const INSTALL_URL_BASE: &str = "https://raw.githubusercontent.com/sbharga/rsc";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Deserialize)]
@@ -39,8 +39,9 @@ pub async fn run() -> anyhow::Result<()> {
     let exe = std::env::current_exe().context("Couldn't locate the rsc binary.")?;
     let dir = exe.parent().context("Couldn't locate the rsc binary.")?;
     println!("Updating rsc {VERSION} to {}...", tag.trim_start_matches('v'));
+    let url = format!("{INSTALL_URL_BASE}/{tag}/install.sh");
     let status = tokio::process::Command::new("sh")
-        .args(["-c", r#"script=$(curl -fsSL "$1") && sh -c "$script""#, "sh", INSTALL_URL])
+        .args(["-c", r#"script=$(curl -fsSL "$1") && sh -c "$script""#, "sh", &url])
         .env("RSC_VERSION", &tag)
         .env("RSC_INSTALL_DIR", dir)
         .status()

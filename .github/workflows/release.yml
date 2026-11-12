@@ -36,3 +36,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ github.event.release.tag_name }}" rsc-${{ matrix.target }}.tar.gz rsc-${{ matrix.target }}.tar.gz.sha256 --clobber
+  notes:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Attach install.sh
+        run: gh release upload "${{ github.event.release.tag_name }}" install.sh --clobber
+      - name: Release notes
+        shell: bash
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          awk -v v="${tag#v}" '$0 == "## " v {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "No CHANGELOG.md entry for $tag" >&2; exit 1; }
+          gh release edit "$tag" --notes-file notes.md

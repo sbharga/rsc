@@ -32,6 +32,10 @@ pub struct Config {
     pub max_turns: u32,
     pub compact_threshold_tokens: u64,
     pub synth_input_budget_tokens: u64,
+    /// Stop starting researchers once a run has used this many tokens; 0 = no cap.
+    pub max_run_tokens: u64,
+    /// Same, in estimated USD; 0 = no cap.
+    pub max_run_cost_usd: f64,
     pub fetch_url_enabled: bool,
     /// Check GitHub releases for a newer rsc on launch.
     pub check_updates: bool,
@@ -51,6 +55,8 @@ impl Default for Config {
             max_turns: 30,
             compact_threshold_tokens: 200_000,
             synth_input_budget_tokens: 120_000,
+            max_run_tokens: 0,
+            max_run_cost_usd: 0.0,
             fetch_url_enabled: false,
             check_updates: true,
         }
@@ -69,6 +75,7 @@ impl Config {
             self.report_words = self.report_words.max(100);
         }
         self.max_turns = self.max_turns.max(1);
+        self.max_run_cost_usd = self.max_run_cost_usd.max(0.0);
     }
 
     /// Returns (config, optional error banner).

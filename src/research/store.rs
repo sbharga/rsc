@@ -114,6 +114,12 @@ pub struct RunConfig {
     pub synth_input_budget_tokens: u64,
     #[serde(default)]
     pub report_style: String,
+    /// Stop starting researchers once a run has used this many tokens; 0 = no cap.
+    #[serde(default)]
+    pub max_run_tokens: u64,
+    /// Same, in estimated USD; 0 = no cap.
+    #[serde(default)]
+    pub max_run_cost_usd: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -171,6 +177,9 @@ pub struct Record {
     pub clarify_rounds: u8,
     #[serde(default)]
     pub sources: Vec<Source>,
+    /// A budget cap stopped research early.
+    #[serde(default)]
+    pub budget_hit: bool,
 }
 
 pub fn new_id() -> String {
@@ -201,6 +210,7 @@ impl Record {
             questions: vec![],
             clarify_rounds: 0,
             sources: vec![],
+            budget_hit: false,
         }
     }
 
@@ -216,6 +226,13 @@ impl Record {
             u += a.usage;
         }
         u
+    }
+
+    /// Usage reached a configured cap. Call after `recompute_costs`.
+    pub fn over_budget(&self) -> bool {
+        let c = &self.config;
+        (c.max_run_tokens > 0 && self.total_usage().tokens() >= c.max_run_tokens)
+            || (c.max_run_cost_usd > 0.0 && self.cost_usd_total >= c.max_run_cost_usd)
     }
 
     /// Recompute per-part and total costs from usage.
@@ -361,6 +378,8 @@ mod tests {
             compact_threshold_tokens: 1,
             synth_input_budget_tokens: 1,
             report_style: String::new(),
+            max_run_tokens: 0,
+            max_run_cost_usd: 0.0,
         };
         let mut r = Record::new("q".into(), cfg);
         r.status = RunStatus::Researching;
@@ -413,6 +432,37 @@ mod tests {
         assert!(r.understanding.is_empty());
         assert_eq!(r.clarify_rounds, 0);
         assert!(r.sources.is_empty());
+    }
+
+    #[test]
+    fn over_budget() {
+        let mut r = rec(&[(AgentStatus::Done, 0)]);
+        r.agents[0].usage.input = 1_000_000;
+        r.cost_usd_total = 100.0;
+        assert!(!r.over_budget());
+        r.config.max_run_tokens = 1000;
+        r.agents[0].usage.input = 999;
+        assert!(!r.over_budget());
+        r.agents[0].usage.input = 1000;
+        assert!(r.over_budget());
+        r.config.max_run_tokens = 0;
+        r.config.max_run_cost_usd = 1.0;
+        r.cost_usd_total = 0.99;
+        assert!(!r.over_budget());
+        r.cost_usd_total = 1.0;
+        assert!(r.over_budget());
+    }
+
+    #[test]
+    fn record_without_budget_fields_loads() {
+        let mut v = serde_json::to_value(rec(&[])).unwrap();
+        v.as_object_mut().unwrap().remove("budget_hit");
+        let cfg = v["config"].as_object_mut().unwrap();
+        cfg.remove("max_run_tokens");
+        cfg.remove("max_run_cost_usd");
+        let r: Record = serde_json::from_value(v).unwrap();
+        assert!(!r.budget_hit);
+        assert_eq!((r.config.max_run_tokens, r.config.max_run_cost_usd), (0, 0.0));
     }
 
     #[test]

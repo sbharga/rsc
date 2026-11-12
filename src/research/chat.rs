@@ -72,7 +72,7 @@ impl Chat {
     }
 
     pub fn with<R>(&self, f: impl FnOnce(&mut ChatState) -> R) -> R {
-        f(&mut self.state.lock().unwrap())
+        f(&mut self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     pub fn busy(&self) -> bool {
@@ -173,6 +173,8 @@ mod tests {
             compact_threshold_tokens: 1,
             synth_input_budget_tokens: 1,
             report_style: "No jargon".into(),
+            max_run_tokens: 0,
+            max_run_cost_usd: 0.0,
         };
         let rec = Record::new("Q".into(), cfg);
         let hist = [

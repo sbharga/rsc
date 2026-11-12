@@ -1,7 +1,10 @@
 use futures_util::StreamExt;
 use serde_json::{Value, json};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
+const MAX_REDIRECTS: usize = 5;
 const MAX_BODY: usize = 5 * 1024 * 1024;
 const MAX_CHARS: usize = 30_000;
 
@@ -22,12 +25,115 @@ pub fn host_of(url: &str) -> String {
     url::Url::parse(url).ok().and_then(|u| u.host_str().map(String::from)).unwrap_or_else(|| "page".into())
 }
 
-pub fn fetch_http() -> reqwest::Client {
+const BLOCKED_MSG: &str = "blocked address";
+
+#[derive(Debug)]
+struct Blocked;
+
+impl std::fmt::Display for Blocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(BLOCKED_MSG)
+    }
+}
+
+impl std::error::Error for Blocked {}
+
+/// True for addresses `fetch_url` must never reach: loopback, private, link-local, CGNAT, multicast, reserved.
+pub fn is_blocked(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(a) => {
+            let o = a.octets();
+            o[0] == 0
+                || o[0] == 10
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+                || o[0] == 127
+                || (o[0] == 169 && o[1] == 254)
+                || (o[0] == 172 && (16..32).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+                || (o[0] == 192 && o[1] == 168)
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+                || o[0] >= 224
+        }
+        IpAddr::V6(a) => {
+            if a.is_unspecified() || a.is_loopback() {
+                return true;
+            }
+            if let Some(v4) = a.to_ipv4() {
+                return is_blocked(IpAddr::V4(v4));
+            }
+            let s = a.segments();
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                let o = a.octets();
+                return is_blocked(IpAddr::V4(Ipv4Addr::new(o[12], o[13], o[14], o[15])));
+            }
+            (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] & 0xffc0) == 0xfec0
+                || (s[0] & 0xff00) == 0xff00
+        }
+    }
+}
+
+/// IP-literal hosts bypass the DNS resolver, so they are checked on the URL itself.
+fn url_blocked(u: &url::Url) -> bool {
+    match u.host() {
+        Some(url::Host::Ipv4(a)) => is_blocked(a.into()),
+        Some(url::Host::Ipv6(a)) => is_blocked(a.into()),
+        _ => false,
+    }
+}
+
+/// Rejects any name that resolves to a blocked address.
+struct GuardedResolver;
+
+impl reqwest::dns::Resolve for GuardedResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            if addrs.iter().any(|a| is_blocked(a.ip())) {
+                return Err(Box::new(Blocked) as Box<dyn std::error::Error + Send + Sync>);
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+fn fetch_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .user_agent(concat!("rsc/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
-        .build()
-        .expect("fetch client")
+        .no_proxy()
+        .dns_resolver(Arc::new(GuardedResolver))
+        .redirect(reqwest::redirect::Policy::custom(|a| {
+            if a.previous().len() > MAX_REDIRECTS {
+                a.error("too many redirects")
+            } else if url_blocked(a.url()) {
+                a.error(Blocked)
+            } else {
+                a.follow()
+            }
+        }))
+}
+
+pub fn fetch_http() -> reqwest::Client {
+    fetch_builder().build().expect("fetch client")
+}
+
+fn is_blocked_err(e: &reqwest::Error) -> bool {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = cur {
+        if err.is::<Blocked>() {
+            return true;
+        }
+        cur = err.source();
+    }
+    false
+}
+
+/// Frame fetched page text so the model can tell it from instructions; the nonce keeps pages from forging the closing tag.
+fn wrap_untrusted(nonce: &str, url: &str, text: &str) -> String {
+    format!("<fetched_{nonce} url=\"{url}\">\n{text}\n</fetched_{nonce}>")
 }
 
 pub fn truncate_chars(s: &str, max: usize) -> String {
@@ -42,7 +148,15 @@ async fn fetch(http: &reqwest::Client, url: &str) -> Result<String, String> {
     if !matches!(u.scheme(), "http" | "https") {
         return Err("only http/https URLs are supported".into());
     }
-    let resp = http.get(u).send().await.map_err(|e| e.without_url().to_string())?;
+    if url_blocked(&u) {
+        return Err(BLOCKED_MSG.into());
+    }
+    let final_url = u.as_str().to_string();
+    let resp = http
+        .get(u)
+        .send()
+        .await
+        .map_err(|e| if is_blocked_err(&e) { BLOCKED_MSG.to_string() } else { e.without_url().to_string() })?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status().as_u16()));
     }
@@ -78,7 +192,10 @@ async fn fetch(http: &reqwest::Client, url: &str) -> Result<String, String> {
     } else {
         return Ok(format!("unsupported content-type {ct}"));
     };
-    Ok(truncate_chars(&text, MAX_CHARS))
+    let mut b = [0u8; 4];
+    rand::fill(&mut b[..]);
+    let nonce = format!("{:02x}{:02x}{:02x}{:02x}", b[0], b[1], b[2], b[3]);
+    Ok(wrap_untrusted(&nonce, &final_url, &truncate_chars(&text, MAX_CHARS)))
 }
 
 /// Execute a model-issued function call; the result is always a string for the model.
@@ -112,5 +229,100 @@ mod tests {
         let out = execute(&h, "fetch_url", r#"{"url":"file:///etc/passwd"}"#).await;
         assert!(out.starts_with("error:"), "{out}");
         assert_eq!(execute(&h, "other", "{}").await, "error: unknown tool");
+    }
+
+    #[test]
+    fn blocked_ranges() {
+        let cases = [
+            ("127.0.0.1", true),
+            ("10.1.2.3", true),
+            ("172.16.0.1", true),
+            ("172.31.255.255", true),
+            ("192.168.1.1", true),
+            ("169.254.169.254", true),
+            ("100.64.0.1", true),
+            ("0.0.0.0", true),
+            ("224.0.0.1", true),
+            ("255.255.255.255", true),
+            ("::1", true),
+            ("::", true),
+            ("fd00::1", true),
+            ("fe80::1", true),
+            ("::ffff:127.0.0.1", true),
+            ("::ffff:169.254.169.254", true),
+            ("64:ff9b::a9fe:a9fe", true),
+            ("8.8.8.8", false),
+            ("1.1.1.1", false),
+            ("172.32.0.1", false),
+            ("100.128.0.1", false),
+            ("2606:4700::1111", false),
+            ("::ffff:8.8.8.8", false),
+        ];
+        for (ip, want) in cases {
+            assert_eq!(is_blocked(ip.parse().unwrap()), want, "{ip}");
+        }
+    }
+
+    #[tokio::test]
+    async fn blocks_ip_literal() {
+        let h = fetch_http();
+        for url in ["http://127.0.0.1:9/", "http://[::1]:9/", "http://0x7f.1:9/"] {
+            let args = json!({ "url": url }).to_string();
+            assert_eq!(execute(&h, "fetch_url", &args).await, "error: blocked address", "{url}");
+        }
+    }
+
+    async fn serve() -> SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let req = String::from_utf8_lossy(&buf);
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let port = addr.port();
+                    let redirect = |to: String| format!("302 Found\r\nLocation: {to}\r\n");
+                    let (status, body) = match path.as_str() {
+                        "/ok" => ("200 OK\r\nContent-Type: text/plain\r\n".to_string(), "hello"),
+                        "/to-ip" => (redirect(format!("http://127.0.0.1:{port}/ok")), ""),
+                        "/to-localhost" => (redirect(format!("http://localhost:{port}/ok")), ""),
+                        "/loop" => (redirect("/loop".into()), ""),
+                        _ => ("404 Not Found\r\n".to_string(), ""),
+                    };
+                    let resp =
+                        format!("HTTP/1.1 {status}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn blocks_redirects_to_private() {
+        let addr = serve().await;
+        let port = addr.port();
+        let h = fetch_builder().resolve("public.test", addr).build().unwrap();
+        let get = |path: &str| {
+            let args = json!({ "url": format!("http://public.test:{port}{path}") }).to_string();
+            let h = h.clone();
+            async move { execute(&h, "fetch_url", &args).await }
+        };
+        let ok = get("/ok").await;
+        assert!(ok.starts_with("<fetched_") && ok.contains("hello"), "{ok}");
+        assert_eq!(get("/to-localhost").await, "error: blocked address");
+        assert_eq!(get("/to-ip").await, "error: blocked address");
+        let looped = get("/loop").await;
+        assert!(looped.starts_with("error:") && looped != "error: blocked address", "{looped}");
     }
 }

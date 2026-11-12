@@ -42,7 +42,7 @@ cargo build --release   # produces target/release/rsc
 
 ## Updating
 
-On launch rsc checks GitHub releases. When a newer one exists, the home screen shows `rsc X available — run rsc update`. `rsc update` installs the newest release over the current binary by running the install script. Turn the check off with `check_updates = false` or in Settings.
+On launch rsc checks GitHub releases. When a newer one exists, the home screen shows `rsc X available — run rsc update`. `rsc update` installs the newest release over the current binary by running the install script from that release's tag. Turn the check off with `check_updates = false` or in Settings.
 
 ## Usage
 
@@ -82,7 +82,8 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `research/<id>/chat.json` | Follow-up chat |
 
 - API requests are sent with `store: false`. Whether OpenAI may train on your data is set by your ChatGPT account's Data Controls.
-- `fetch_url` is off by default. When enabled, it downloads any http(s) URL the model picks, from your machine. That can include addresses on your local network.
+- `fetch_url` is off by default. When on, it downloads http(s) URLs the model picks, from your machine. rsc refuses loopback, private, link-local, unique-local, CGNAT and other non-public addresses, including through redirects (max 5) and DNS. It ignores system proxy settings so this check always applies.
+- Pages can contain instructions aimed at the model (prompt injection). rsc marks fetched text as untrusted, but a prompt cannot fully prevent a model from, for example, putting your question into a URL it fetches. The site would then see it. Leave `fetch_url` off if that matters.
 - Unless `check_updates` is off, each launch sends one unauthenticated request to `api.github.com` to check for releases.
 
 ## Configuration
@@ -102,6 +103,8 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `max_turns` | `30` | |
 | `compact_threshold_tokens` | `200000` | |
 | `synth_input_budget_tokens` | `120000` | |
+| `max_run_tokens` | `0` | Run budget in tokens (all stages); `0` = no cap. When reached, no new researchers start, running ones write their report, and synthesis completes. The report notes it. |
+| `max_run_cost_usd` | `0` | Same cap in estimated USD from `pricing.toml`; models without rates count only web-search cost. |
 | `fetch_url_enabled` | `false` | |
 | `check_updates` | `true` | Check GitHub for a newer release on launch |
 

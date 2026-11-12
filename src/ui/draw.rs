@@ -10,6 +10,10 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Clear, Gauge, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
+// Rough per-run token estimates from local runs: 8k–47k per researcher, planner plus synthesis 40–70k.
+const EST_AGENT_TOKENS: u64 = 30_000;
+const EST_OVERHEAD_TOKENS: u64 = 60_000;
+
 fn muted() -> Style {
     Style::new().fg(MUTED)
 }
@@ -60,6 +64,9 @@ struct RunView {
     clarify_rounds: u8,
     questions: Vec<String>,
     synth_started: bool,
+    budget_hit: bool,
+    max_run_tokens: u64,
+    max_run_cost_usd: f64,
 }
 
 fn run_view(app: &App) -> Option<RunView> {
@@ -81,6 +88,9 @@ fn run_view(app: &App) -> Option<RunView> {
             clarify_rounds: s.record.clarify_rounds,
             questions: s.record.questions.clone(),
             synth_started: !s.synth_text.is_empty() || s.record.synthesis.usage.tokens() > 0,
+            budget_hit: s.record.budget_hit,
+            max_run_tokens: s.record.config.max_run_tokens,
+            max_run_cost_usd: s.record.config.max_run_cost_usd,
         }
     }))
 }
@@ -311,6 +321,19 @@ fn draw_review(f: &mut Frame, app: &mut App, area: Rect) {
         format!("{} angles — one researcher each. Edit freely, then Enter to launch.", rv.perspectives.len()),
         muted(),
     )));
+    let n = rv.perspectives.len();
+    let est = EST_OVERHEAD_TOKENS + EST_AGENT_TOKENS * n as u64;
+    let mut s = format!("Estimate: ~{} for {n} researchers (rough; varies by model and effort)", fmt::tokens(est));
+    if rv.max_run_tokens > 0 {
+        s.push_str(&format!(" · cap {}", fmt::tokens(rv.max_run_tokens)));
+        if est >= rv.max_run_tokens {
+            s.push_str(" — research may stop early");
+        }
+    }
+    if rv.max_run_cost_usd > 0.0 {
+        s.push_str(&format!(" · cap {}", fmt::money(rv.max_run_cost_usd)));
+    }
+    lines.extend(fmt::wrap(&s, w).into_iter().map(|l| Line::from(Span::styled(l, muted()))));
     lines.push(Line::raw(""));
     let mut sel_start = 0;
     let mut sel_end = 0;
@@ -371,12 +394,15 @@ fn draw_run(f: &mut Frame, app: &mut App, area: Rect) {
 
     let pct = (rv.progress * 100.0).round() as u32;
     let done = rv.agents.iter().filter(|a| a.status == AgentStatus::Done).count();
-    let label = match rv.status {
+    let mut label = match rv.status {
         RunStatus::Planning => format!("Planning · {pct}%"),
         RunStatus::Researching => format!("Researching · {done}/{} done · {pct}%", rv.agents.len()),
         RunStatus::Synthesizing => format!("Synthesizing · {pct}%"),
         s => format!("{} · {pct}%", s.label()),
     };
+    if rv.budget_hit {
+        label.push_str(" · budget reached");
+    }
     f.render_widget(
         Gauge::default()
             .ratio(rv.progress.clamp(0.0, 1.0))
