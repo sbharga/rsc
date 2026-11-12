@@ -2,7 +2,7 @@
 
 Multi-agent deep research in your terminal, powered by your ChatGPT plan.
 
-![rsc researching a question with four agents; the right pane shows one agent's live timeline of reasoning, searches and opened pages](docs/screenshot.png)
+![rsc in the terminal: ask a question, review the planned angles, watch four agents research in parallel, then read the cited report](docs/demo.gif)
 
 ## What it does
 
