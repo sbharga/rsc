@@ -15,15 +15,23 @@ The Run screen shows each agent's live timeline: reasoning summaries, searches, 
 
 ## Requirements
 
-- Linux or macOS. Windows is unsupported (`src/paths.rs` and `src/auth/mod.rs` use `std::os::unix`).
-- Stable Rust with edition 2024.
-- A C toolchain and `cmake`, because `aws-lc-sys` is built for rustls.
+- Linux or macOS on x86_64 or arm64. Windows is unsupported (`src/paths.rs` and `src/auth/mod.rs` use `std::os::unix`).
 - A ChatGPT account. rsc uses your ChatGPT plan's usage; manage it at <https://chatgpt.com/settings/usage>.
 
 ## Install
 
 ```sh
-cargo install --git https://github.com/sbharga/rsc
+curl -fsSL https://raw.githubusercontent.com/sbharga/rsc/master/install.sh | sh
+```
+
+This downloads the newest release binary (pre-releases included) for your OS and architecture, verifies its SHA-256 and installs it to `~/.local/bin`. Set `RSC_INSTALL_DIR=/path` to change the directory and `RSC_VERSION=v0.0.1` to pin a version.
+
+### From source
+
+Requires stable Rust with edition 2024, plus a C toolchain and `cmake` because `aws-lc-sys` is built for rustls.
+
+```sh
+cargo install --git https://github.com/sbharga/rsc --tag v0.0.1
 ```
 
 Or from a clone:
@@ -32,9 +40,13 @@ Or from a clone:
 cargo build --release   # produces target/release/rsc
 ```
 
+## Updating
+
+On launch rsc checks GitHub releases. When a newer one exists, the home screen shows `rsc X available — run rsc update`. `rsc update` installs the newest release over the current binary by running the install script. Turn the check off with `check_updates = false` or in Settings.
+
 ## Usage
 
-Run `rsc`. `rsc --version` prints the version.
+Run `rsc`. `rsc --version` prints the version; `rsc update` updates rsc.
 
 First launch opens the browser for "Sign in with ChatGPT". A local callback runs on `127.0.0.1` on a random port. If the browser can't open, press `c` to copy the URL.
 
@@ -67,6 +79,7 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 - Incognito runs write nothing under `research/`.
 - API requests are sent with `store: false`.
 - `fetch_url` is off by default. When enabled, it downloads any http(s) URL the model picks, from your machine. That can include addresses on your local network.
+- Unless `check_updates` is off, each launch sends one unauthenticated request to `api.github.com` to check for releases.
 
 ## Configuration
 
@@ -86,6 +99,7 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `synth_input_budget_tokens` | `120000` | |
 | `fetch_url_enabled` | `false` | |
 | `incognito_default` | `false` | |
+| `check_updates` | `true` | Check GitHub for a newer release on launch |
 
 Most of these are editable in Settings (`Ctrl+O`). If `config.toml` is invalid, rsc falls back to the defaults and shows a banner.
 

@@ -24,6 +24,7 @@ pub enum AppMsg {
     SignIn(Result<Account, AuthError>),
     SignedOut(bool),
     Models(String, Result<Vec<ModelInfo>, ApiError>),
+    UpdateAvailable(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -197,9 +198,10 @@ pub enum Row {
     Num(Num),
     FetchUrl,
     Incognito,
+    CheckUpdates,
 }
 
-pub const ROWS: [Row; 11] = [
+pub const ROWS: [Row; 12] = [
     Row::Account,
     Row::Usage,
     Row::Model(Stage::Planner),
@@ -211,6 +213,7 @@ pub const ROWS: [Row; 11] = [
     Row::Num(Num::ReportWords),
     Row::FetchUrl,
     Row::Incognito,
+    Row::CheckUpdates,
 ];
 
 pub struct App {
@@ -238,6 +241,7 @@ pub struct App {
     pub cwd: PathBuf,
     pub clarify: ClarifyForm,
     pub inspect: Inspect,
+    pub update: Option<String>,
 }
 
 pub struct ClarifyForm {
@@ -351,8 +355,10 @@ impl App {
             quit: false,
             clarify: ClarifyForm { key: (String::new(), 0), answers: vec![], focus: 0 },
             inspect: Inspect::default(),
+            update: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         };
+        app.check_update();
         app.route_startup();
         app
     }
@@ -370,6 +376,18 @@ impl App {
             }
             None => self.screen = Screen::SignIn,
         }
+    }
+
+    fn check_update(&self) {
+        if !self.cfg.check_updates {
+            return;
+        }
+        let tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            if let Ok(Some(tag)) = crate::update::check().await {
+                let _ = tx.send(AppMsg::UpdateAvailable(tag));
+            }
+        });
     }
 
     pub fn toast(&mut self, s: impl Into<String>) {
@@ -524,6 +542,7 @@ impl App {
 
     pub fn on_msg(&mut self, m: AppMsg) {
         match m {
+            AppMsg::UpdateAvailable(tag) => self.update = Some(tag),
             AppMsg::SignInUrl(u) => {
                 if let SignInPhase::Waiting { url, .. } = &mut self.signin.phase {
                     *url = Some(u);
@@ -1366,6 +1385,10 @@ impl App {
                 Row::Incognito => {
                     self.cfg.incognito_default = !self.cfg.incognito_default;
                     self.home.incognito = self.cfg.incognito_default;
+                    self.save_cfg();
+                }
+                Row::CheckUpdates => {
+                    self.cfg.check_updates = !self.cfg.check_updates;
                     self.save_cfg();
                 }
             },

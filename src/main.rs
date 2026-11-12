@@ -5,15 +5,17 @@ mod paths;
 mod pricing;
 mod research;
 mod ui;
+mod update;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    if let Some(a) = std::env::args().nth(1) {
-        if a == "--version" {
+    match std::env::args().nth(1).as_deref() {
+        None => ui::run().await,
+        Some("--version") => {
             println!("rsc {}", env!("CARGO_PKG_VERSION"));
-            return Ok(());
+            Ok(())
         }
-        anyhow::bail!("usage: rsc [--version]");
+        Some("update") => update::run().await,
+        Some(_) => anyhow::bail!("usage: rsc [--version | update]"),
     }
-    ui::run().await
 }

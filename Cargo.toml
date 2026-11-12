@@ -1,6 +1,6 @@
 [package]
 name = "rsc"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 description = "Multi-agent deep research in your terminal, powered by your ChatGPT plan"
 license = "MIT OR Apache-2.0"

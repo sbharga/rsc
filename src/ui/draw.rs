@@ -247,7 +247,10 @@ fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
         (_, Models::Loading) => {
             Some(Span::styled(format!("{} loading models…", SPINNER[app.tick % SPINNER.len()]), muted()))
         }
-        _ => None,
+        _ => app
+            .update
+            .as_ref()
+            .map(|t| Span::styled(format!("rsc {} available — run rsc update", t.trim_start_matches('v')), accent())),
     };
     if let Some(m) = msg {
         f.render_widget(Paragraph::new(m).alignment(Alignment::Center), banner);
@@ -590,6 +593,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
             }
             Row::FetchUrl => ("fetch_url tool".into(), on_off(app.cfg.fetch_url_enabled), "sites see your IP"),
             Row::Incognito => ("Incognito by default".into(), on_off(app.cfg.incognito_default), ""),
+            Row::CheckUpdates => ("Check for updates".into(), on_off(app.cfg.check_updates), "on launch, via GitHub"),
         };
         let selected = i == app.settings_sel;
         let line = Line::from(vec![
