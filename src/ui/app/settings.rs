@@ -66,6 +66,18 @@ impl App {
                     self.cfg.fetch_url_enabled = !self.cfg.fetch_url_enabled;
                     self.save_cfg();
                 }
+                Row::CheckLinks => {
+                    self.cfg.check_links = !self.cfg.check_links;
+                    self.save_cfg();
+                }
+                Row::VerifyCitations => {
+                    self.cfg.verify_citations = !self.cfg.verify_citations;
+                    self.save_cfg();
+                }
+                Row::GapRound => {
+                    self.cfg.gap_round = !self.cfg.gap_round;
+                    self.save_cfg();
+                }
                 Row::CheckUpdates => {
                     self.cfg.check_updates = !self.cfg.check_updates;
                     self.save_cfg();
@@ -77,9 +89,10 @@ impl App {
 }
 
 impl Num {
-    /// Limit an entered value to what the setting accepts; report words keep 0 as "auto".
+    /// Limit an entered value to what the setting accepts; default agents and report words keep 0 as "auto".
     pub fn clamp(self, v: u32) -> u32 {
         match self {
+            Num::DefaultAgents if v == 0 => 0,
             Num::DefaultAgents | Num::MaxParallel => v.clamp(1, MAX_AGENTS as u32),
             Num::ReportWords if v == 0 => 0,
             Num::ReportWords => v.clamp(100, 20_000),
@@ -92,11 +105,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_counts_clamp_to_1_through_max() {
-        for n in [Num::DefaultAgents, Num::MaxParallel] {
-            let got: Vec<u32> = [0, 1, 99, 100, 20_001].iter().map(|&v| n.clamp(v)).collect();
-            assert_eq!(got, [1, 1, 99, 99, 99]);
-        }
+    fn agent_counts_clamp_to_max_and_default_keeps_auto() {
+        let got: Vec<u32> = [0, 1, 99, 100, 20_001].iter().map(|&v| Num::DefaultAgents.clamp(v)).collect();
+        assert_eq!(got, [0, 1, 99, 99, 99]);
+        let got: Vec<u32> = [0, 1, 99, 100, 20_001].iter().map(|&v| Num::MaxParallel.clamp(v)).collect();
+        assert_eq!(got, [1, 1, 99, 99, 99]);
     }
 
     #[test]

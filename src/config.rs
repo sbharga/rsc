@@ -16,6 +16,9 @@ impl StageModel {
 
 /// Upper bound for the number of agents and for how many run at once.
 pub const MAX_AGENTS: u8 = 99;
+/// Bounds on the number of researchers when the planner chooses.
+pub const AUTO_MIN_AGENTS: u8 = 2;
+pub const AUTO_MAX_AGENTS: u8 = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -24,6 +27,7 @@ pub struct Config {
     pub researcher: StageModel,
     pub compactor: StageModel,
     pub synthesizer: StageModel,
+    /// Researchers per run; `0` lets the planner choose (2–8).
     pub default_agents: u8,
     pub max_parallel: u8,
     /// Target report length per researcher; 0 lets the model size each report to the problem.
@@ -40,6 +44,12 @@ pub struct Config {
     pub fetch_url_enabled: bool,
     /// Check GitHub releases for a newer rsc on launch.
     pub check_updates: bool,
+    /// Probe each cited URL (HEAD/GET) to flag dead links; sites see your IP.
+    pub check_links: bool,
+    /// Ask a model whether each cited page supports the claims that cite it.
+    pub verify_citations: bool,
+    /// Let a reviewer propose follow-up researchers after the first round.
+    pub gap_round: bool,
 }
 
 impl Default for Config {
@@ -49,7 +59,7 @@ impl Default for Config {
             researcher: StageModel::new("medium"),
             compactor: StageModel::new("low"),
             synthesizer: StageModel::new("high"),
-            default_agents: 4,
+            default_agents: 0,
             max_parallel: 3,
             report_words: 0,
             report_style: String::new(),
@@ -60,6 +70,9 @@ impl Default for Config {
             max_run_cost_usd: 0.0,
             fetch_url_enabled: false,
             check_updates: true,
+            check_links: true,
+            verify_citations: false,
+            gap_round: false,
         }
     }
 }
@@ -70,7 +83,9 @@ impl Config {
     }
 
     pub fn clamp(&mut self) {
-        self.default_agents = self.default_agents.clamp(1, MAX_AGENTS);
+        if self.default_agents != 0 {
+            self.default_agents = self.default_agents.clamp(1, MAX_AGENTS);
+        }
         self.max_parallel = self.max_parallel.clamp(1, MAX_AGENTS);
         if self.report_words != 0 {
             self.report_words = self.report_words.max(100);
@@ -103,6 +118,9 @@ impl Config {
             report_style: self.report_style.trim().to_string(),
             max_run_tokens: self.max_run_tokens,
             max_run_cost_usd: self.max_run_cost_usd,
+            check_links: self.check_links,
+            verify_citations: self.verify_citations,
+            gap_round: self.gap_round,
         }
     }
 
@@ -152,5 +170,8 @@ mod tests {
         c.report_words = 5;
         c.clamp();
         assert_eq!(c.report_words, 100);
+        c.default_agents = 0;
+        c.clamp();
+        assert_eq!(c.default_agents, 0);
     }
 }

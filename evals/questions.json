@@ -1,0 +1,22 @@
+[
+  {"id": "f1", "type": "factual", "question": "What is the current population of Tokyo's 23 special wards, and how has it changed over the last ten years?"},
+  {"id": "f2", "type": "factual", "question": "Who invented the lithium-ion battery, and what did each key contributor add?"},
+  {"id": "f3", "type": "factual", "question": "What is the half-life of carbon-14, and how is it measured?"},
+  {"id": "f4", "type": "factual", "question": "When did the James Webb Space Telescope launch, and what are its main instruments?"},
+  {"id": "c1", "type": "comparison", "question": "Compare PostgreSQL and MySQL for a write-heavy OLTP workload."},
+  {"id": "c2", "type": "comparison", "question": "Rust vs Go for building network services: performance, safety and developer productivity."},
+  {"id": "c3", "type": "comparison", "question": "Heat pumps vs gas boilers for a 1970s house in Germany: running costs and installation trade-offs."},
+  {"id": "c4", "type": "comparison", "question": "Index funds vs actively managed funds over the last 20 years: net returns after fees."},
+  {"id": "r1", "type": "recent", "question": "What changed in the most recent stable Rust release?"},
+  {"id": "r2", "type": "recent", "question": "What are the latest developments in solid-state battery commercialization?"},
+  {"id": "r3", "type": "recent", "question": "What was agreed at the most recent UN climate conference (COP)?"},
+  {"id": "r4", "type": "recent", "question": "What were the most significant AI model releases of the past three months?"},
+  {"id": "k1", "type": "contested", "question": "Does raising the minimum wage reduce employment? Summarize the evidence."},
+  {"id": "k2", "type": "contested", "question": "Is intermittent fasting more effective for weight loss than continuous calorie restriction?"},
+  {"id": "k3", "type": "contested", "question": "Are remote workers more or less productive than office workers?"},
+  {"id": "k4", "type": "contested", "question": "Is nuclear power cheaper or more expensive per delivered MWh than renewables plus storage?"},
+  {"id": "t1", "type": "technical", "question": "How does Linux io_uring differ from epoll, and when is it faster?"},
+  {"id": "t2", "type": "technical", "question": "How does SQLite's WAL mode work, and what are its concurrency limits?"},
+  {"id": "t3", "type": "technical", "question": "How do CRDTs handle concurrent text edits, and how do Yjs and Automerge differ?"},
+  {"id": "t4", "type": "technical", "question": "How does Raft handle leader election and log replication, and what are common implementation pitfalls?"}
+]

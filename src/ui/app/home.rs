@@ -25,7 +25,7 @@ impl App {
             KeyCode::Char('+') | KeyCode::Char('=') if self.home.chip == 0 => {
                 self.home.agents = (self.home.agents + 1).min(MAX_AGENTS)
             }
-            KeyCode::Char('-') if self.home.chip == 0 => self.home.agents = self.home.agents.saturating_sub(1).max(1),
+            KeyCode::Char('-') if self.home.chip == 0 => self.home.agents = self.home.agents.saturating_sub(1),
             KeyCode::Char('m') => open_url(USAGE_URL),
             KeyCode::Char('r') => {
                 if matches!(self.models, Models::Failed(_)) {
@@ -34,7 +34,7 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Char(' ') => match self.home.chip {
                 0 if k.code == KeyCode::Enter => {
-                    self.home.agents = if self.home.agents >= MAX_AGENTS { 1 } else { self.home.agents + 1 }
+                    self.home.agents = if self.home.agents >= MAX_AGENTS { 0 } else { self.home.agents + 1 }
                 }
                 1..=3 if k.code == KeyCode::Enter => {
                     let stage = [Stage::Planner, Stage::Researcher, Stage::Synthesizer][self.home.chip - 1];

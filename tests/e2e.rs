@@ -27,6 +27,9 @@ fn normal(req: &Req, titles: &[&str]) -> Reply {
         Kind::Researcher(t) => Reply::Output(vec![msg(&format!("Report {t}: [src](https://example.com/{t})"))]),
         Kind::Synth => Reply::Output(vec![msg("Final answer [1].")]),
         Kind::Compactor => Reply::Output(vec![msg("summary")]),
+        Kind::GroupSynth => Reply::Output(vec![msg("Group summary [1].")]),
+        Kind::Gaps => Reply::Output(vec![gaps(&[])]),
+        Kind::Verify => Reply::Output(vec![msg(r#"{"verdicts":[]}"#)]),
     }
 }
 
@@ -52,6 +55,7 @@ async fn happy_path_writes_report() {
     assert!(stdout.contains("Final answer [1]."), "{stdout}");
     assert!(stdout.contains("## Sources"), "{stdout}");
 
+    assert_eq!(env.mock.count(&Kind::GroupSynth), 0);
     let (id, rec) = env.record();
     assert_eq!(rec["status"], "done", "{}", err(&o));
     assert!(rec["agents"].as_array().unwrap().iter().all(|a| a["status"] == "done"));
@@ -90,6 +94,10 @@ async fn failed_researcher_still_synthesizes() {
     assert_eq!(j["exit_code"], 0);
     assert_eq!(j["agents"][1]["status"], "failed");
     assert_eq!(j["agents"][1]["error"], "boom");
+    assert_eq!(j["agents_failed"], 1);
+    assert_eq!(j["citations"]["invalid_numbers"], 0);
+    assert_eq!(j["config"]["agents"], 2);
+    assert!(j["report_words"].is_number(), "{j}");
     assert_eq!(j["output"], path.to_str().unwrap());
     assert!(std::fs::read_to_string(&path).unwrap().contains("Final"));
     let synth = &env.mock.bodies(&Kind::Synth)[0];
@@ -292,4 +300,98 @@ async fn restarts_are_capped_per_run() {
     assert_eq!(o.status.code(), Some(1), "{}", err(&o));
     let total: usize = ["A", "B", "C", "D"].iter().map(|t| env.mock.count(&Kind::Researcher(t.to_string()))).sum();
     assert_eq!(total, 28);
+}
+
+const GAP_BASE: &str = "default_agents = 2\nmax_parallel = 2\ngap_round = true\n";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gap_round_runs_followup_agents() {
+    let env = Env::new(GAP_BASE, |r| match &r.kind {
+        Kind::Gaps => Reply::Output(vec![gaps(&["C"])]),
+        _ => normal(r, &["A", "B"]),
+    })
+    .await;
+    let o = run(&env, &["run", "q", "--yes", "--json"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(env.mock.count(&Kind::Gaps), 1);
+    assert!(env.mock.count(&Kind::Researcher("C".into())) >= 1);
+    let (_, rec) = env.record();
+    assert_eq!(rec["agents"].as_array().unwrap().len(), 3);
+    assert_eq!(rec["agents"][2]["followup"], true);
+    let synth = &env.mock.bodies(&Kind::Synth)[0];
+    assert!(synth["input"].to_string().contains("Report 3: C"), "{}", synth["input"]);
+    let j: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(j["gap_agents"], 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gap_round_without_gaps_synthesizes() {
+    let env = Env::new(GAP_BASE, |r| normal(r, &["A", "B"])).await;
+    let o = run(&env, &["run", "q", "--yes"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(env.record().1["agents"].as_array().unwrap().len(), 2);
+    assert_eq!(env.mock.count(&Kind::Gaps), 1);
+    assert_eq!(env.mock.count(&Kind::Synth), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_after_gap_approval_skips_review() {
+    let env = Env::new(GAP_BASE, |r| match (&r.kind, r.n) {
+        (Kind::Gaps, _) => Reply::Output(vec![gaps(&["C"])]),
+        (Kind::Researcher(t), 0) if t == "C" => Reply::Hang,
+        _ => normal(r, &["A", "B"]),
+    })
+    .await;
+    let c = Kind::Researcher("C".into());
+    let mut child = env.cmd(&["run", "q", "--yes"]).spawn().unwrap();
+    until(|| env.mock.count(&c) == 1).await;
+    child.kill().await.unwrap();
+    let (id, _) = env.record();
+    let o = run(&env, &["resume", &id]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(env.mock.count(&Kind::Gaps), 1);
+    assert_eq!(env.mock.count(&c), 2);
+    assert_eq!(env.record().1["status"], "done");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn many_reports_use_hierarchical_synthesis() {
+    let titles = ["A", "B", "C", "D", "E", "F", "G", "H", "I"];
+    let env = Env::new("max_parallel = 9\n", move |r| normal(r, &titles)).await;
+    let o = run(&env, &["run", "q", "--yes", "--agents", "9"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(env.mock.count(&Kind::GroupSynth), 2);
+    assert_eq!(env.mock.count(&Kind::Synth), 1);
+    let synth = env.mock.bodies(&Kind::Synth)[0]["input"].to_string();
+    assert!(synth.contains("## Group 1 summary") && synth.contains("## Group 2 summary"), "{synth}");
+    let groups: Vec<String> = env.mock.bodies(&Kind::GroupSynth).iter().map(|b| b["input"].to_string()).collect();
+    for (i, t) in titles.iter().enumerate() {
+        let needle = format!("Report {}: {t}", i + 1);
+        assert_eq!(groups.iter().filter(|g| g.contains(&needle)).count(), 1, "{needle}");
+    }
+    assert!(
+        groups.iter().all(|g| !titles.iter().enumerate().all(|(i, t)| g.contains(&format!("Report {}: {t}", i + 1))))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cited_loopback_link_is_not_probed() {
+    let host = std::sync::Arc::new(std::sync::OnceLock::<String>::new());
+    let h = host.clone();
+    let cfg = format!("{BASE}check_links = true\n");
+    let env = Env::new(&cfg, move |r| match &r.kind {
+        Kind::Researcher(_) => Reply::Output(vec![msg(&format!("[src](http://{}/page)", h.get().unwrap()))]),
+        _ => normal(r, &["A", "B"]),
+    })
+    .await;
+    host.set(env.mock.base.trim_start_matches("http://").trim_end_matches("/v1").to_string()).unwrap();
+    let o = run(&env, &["run", "q", "--yes", "--json", "--verify"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let (_, rec) = env.record();
+    assert_eq!(rec["sources"][0]["status"], "unknown");
+    assert_eq!(rec["config"]["verify_citations"], true);
+    assert_eq!(env.mock.count(&Kind::Verify), 0);
+    let j: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(j["citations"]["links"]["unknown"], 1, "{j}");
+    assert_eq!(env.mock.hits(), 1 + env.mock.total());
 }

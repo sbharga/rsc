@@ -12,6 +12,7 @@ pub enum RunStatus {
     Planning,
     Clarifying,
     Review,
+    GapReview,
     Researching,
     Synthesizing,
     Done,
@@ -26,6 +27,7 @@ impl RunStatus {
             RunStatus::Planning => "planning",
             RunStatus::Clarifying => "clarifying",
             RunStatus::Review => "review",
+            RunStatus::GapReview => "gap review",
             RunStatus::Researching => "researching",
             RunStatus::Synthesizing => "synthesizing",
             RunStatus::Done => "done",
@@ -57,6 +59,31 @@ pub struct Perspective {
     pub brief: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkStatus {
+    #[default]
+    Unchecked,
+    Live,
+    Dead,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Support {
+    Supported,
+    Partial,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Verdict {
+    pub claim: String,
+    pub verdict: Support,
+    pub note: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Source {
     pub url: String,
@@ -68,6 +95,13 @@ pub struct Source {
     /// Cited in the final report.
     #[serde(default)]
     pub in_final: bool,
+    #[serde(default)]
+    pub status: LinkStatus,
+    /// No stage opened it or got it as a search annotation; seen only as a link in model text.
+    #[serde(default)]
+    pub model_supplied: bool,
+    #[serde(default)]
+    pub verdicts: Vec<Verdict>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,12 +113,18 @@ pub struct AgentRec {
     pub usage: Usage,
     pub cost_usd: Option<f64>,
     pub turns: u32,
+    /// Added by the follow-up round.
+    #[serde(default)]
+    pub followup: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SynthRec {
     pub usage: Usage,
     pub cost_usd: Option<f64>,
+    /// `[n]` numbers in the final text that were not on the Sources list given to the synthesizer.
+    #[serde(default)]
+    pub invalid_citations: Vec<usize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,6 +146,7 @@ pub struct RunConfig {
     pub researcher: StageModel,
     pub compactor: StageModel,
     pub synthesizer: StageModel,
+    /// `0` = the planner chooses (2–8).
     pub agents: u8,
     pub max_parallel: u8,
     pub fetch_url: bool,
@@ -121,6 +162,12 @@ pub struct RunConfig {
     /// Same, in estimated USD; 0 = no cap.
     #[serde(default)]
     pub max_run_cost_usd: f64,
+    #[serde(default)]
+    pub check_links: bool,
+    #[serde(default)]
+    pub verify_citations: bool,
+    #[serde(default)]
+    pub gap_round: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -181,6 +228,17 @@ pub struct Record {
     /// A budget cap stopped research early.
     #[serde(default)]
     pub budget_hit: bool,
+    /// Proposed follow-up angles awaiting approval.
+    #[serde(default)]
+    pub gaps: Vec<Perspective>,
+    /// The gap reviewer's list of gaps and contradictions.
+    #[serde(default)]
+    pub gap_notes: String,
+    /// The gap reviewer has run for this run; never review again.
+    #[serde(default)]
+    pub gaps_reviewed: bool,
+    #[serde(default)]
+    pub verify_usage: Usage,
 }
 
 pub fn new_id() -> String {
@@ -212,6 +270,10 @@ impl Record {
             clarify_rounds: 0,
             sources: vec![],
             budget_hit: false,
+            gaps: vec![],
+            gap_notes: String::new(),
+            gaps_reviewed: false,
+            verify_usage: Usage::default(),
         }
     }
 
@@ -223,6 +285,7 @@ impl Record {
         let mut u = self.planner_usage;
         u += self.compaction_usage;
         u += self.synthesis.usage;
+        u += self.verify_usage;
         for a in &self.agents {
             u += a.usage;
         }
@@ -249,6 +312,7 @@ impl Record {
         };
         add(p.cost(&self.config.planner.model, &self.planner_usage), &self.planner_usage);
         add(p.cost(&self.config.compactor.model, &self.compaction_usage), &self.compaction_usage);
+        add(p.cost(&self.config.compactor.model, &self.verify_usage), &self.verify_usage);
         for a in &mut self.agents {
             a.cost_usd = p.cost(&self.config.researcher.model, &a.usage);
             add(a.cost_usd, &a.usage);
@@ -383,7 +447,11 @@ pub fn progress(r: &Record, synth_chars: usize) -> f64 {
         RunStatus::Planning => 0.02,
         RunStatus::Clarifying => 0.03,
         RunStatus::Review => 0.05,
-        RunStatus::Researching | RunStatus::Failed | RunStatus::Cancelled | RunStatus::Interrupted => {
+        RunStatus::GapReview
+        | RunStatus::Researching
+        | RunStatus::Failed
+        | RunStatus::Cancelled
+        | RunStatus::Interrupted => {
             if r.agents.is_empty() {
                 return 0.05;
             }
@@ -438,6 +506,9 @@ mod tests {
             report_style: String::new(),
             max_run_tokens: 0,
             max_run_cost_usd: 0.0,
+            check_links: false,
+            verify_citations: false,
+            gap_round: false,
         };
         let mut r = Record::new("q".into(), cfg);
         r.status = RunStatus::Researching;
@@ -451,6 +522,7 @@ mod tests {
                 usage: Usage::default(),
                 cost_usd: None,
                 turns: *t,
+                followup: false,
             })
             .collect();
         r
@@ -490,6 +562,42 @@ mod tests {
         assert!(r.understanding.is_empty());
         assert_eq!(r.clarify_rounds, 0);
         assert!(r.sources.is_empty());
+    }
+
+    #[test]
+    fn record_without_phase2_fields_loads() {
+        let mut r = rec(&[(AgentStatus::Done, 0)]);
+        r.sources.push(Source {
+            url: "https://a.test/".into(),
+            title: String::new(),
+            agents: vec![0],
+            in_final: true,
+            status: LinkStatus::Live,
+            model_supplied: true,
+            verdicts: vec![Verdict { claim: "c".into(), verdict: Support::Partial, note: "n".into() }],
+        });
+        let mut v = serde_json::to_value(&r).unwrap();
+        let o = v.as_object_mut().unwrap();
+        for k in ["gaps", "gap_notes", "gaps_reviewed", "verify_usage"] {
+            o.remove(k);
+        }
+        o["synthesis"].as_object_mut().unwrap().remove("invalid_citations");
+        for k in ["check_links", "verify_citations", "gap_round"] {
+            o["config"].as_object_mut().unwrap().remove(k);
+        }
+        o["agents"][0].as_object_mut().unwrap().remove("followup");
+        for k in ["status", "model_supplied", "verdicts"] {
+            o["sources"][0].as_object_mut().unwrap().remove(k);
+        }
+        let r: Record = serde_json::from_value(v).unwrap();
+        assert!(r.gaps.is_empty() && r.gap_notes.is_empty() && !r.gaps_reviewed);
+        assert_eq!(r.verify_usage.tokens(), 0);
+        assert!(r.synthesis.invalid_citations.is_empty());
+        assert!(!r.config.check_links && !r.config.verify_citations && !r.config.gap_round);
+        assert!(!r.agents[0].followup);
+        let s = &r.sources[0];
+        assert_eq!(s.status, LinkStatus::Unchecked);
+        assert!(!s.model_supplied && s.verdicts.is_empty());
     }
 
     #[test]

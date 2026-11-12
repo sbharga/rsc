@@ -5,12 +5,13 @@ use crate::research::store::Perspective;
 impl App {
     pub(super) fn key_review(&mut self, k: KeyEvent) {
         let Some(run) = self.run.clone() else { return };
-        let n = run.with(|s| s.record.perspectives.len());
+        let n = run.review_angles().len();
+        let gap = run.status() == RunStatus::GapReview;
         match k.code {
             KeyCode::Up => self.review_sel = self.review_sel.saturating_sub(1),
             KeyCode::Down => self.review_sel = (self.review_sel + 1).min(n.saturating_sub(1)),
             KeyCode::Char('e') => {
-                if let Some(p) = run.with(|s| s.record.perspectives.get(self.review_sel).cloned()) {
+                if let Some(p) = run.review_angles().get(self.review_sel).cloned() {
                     self.modal = Modal::Angle(Box::new(AngleEdit {
                         idx: Some(self.review_sel),
                         title: single_line_ta(&p.title),
@@ -20,7 +21,8 @@ impl App {
                 }
             }
             KeyCode::Char('a') => {
-                if n >= MAX_AGENTS as usize {
+                let total = if gap { n + run.with(|s| s.record.perspectives.len()) } else { n };
+                if total >= MAX_AGENTS as usize {
                     self.toast(format!("Maximum {MAX_AGENTS} angles"));
                 } else {
                     self.modal = Modal::Angle(Box::new(AngleEdit {
@@ -33,24 +35,37 @@ impl App {
             }
             KeyCode::Char('d') => {
                 if n <= 1 {
-                    self.toast("At least one angle is required");
+                    self.toast(if gap {
+                        "At least one angle is required — s skips"
+                    } else {
+                        "At least one angle is required"
+                    });
                 } else {
-                    let mut ps = run.with(|s| s.record.perspectives.clone());
+                    let mut ps = run.review_angles();
                     ps.remove(self.review_sel);
-                    run.set_perspectives(ps);
+                    run.set_review_angles(ps);
                     self.review_sel = self.review_sel.min(n - 2);
                 }
             }
-            KeyCode::Char('p') => {
+            KeyCode::Char('p') if !gap => {
                 run.replan();
                 self.screen = Screen::Run;
             }
             KeyCode::Enter => {
-                run.launch();
+                if gap {
+                    run.approve_gaps();
+                } else {
+                    run.launch();
+                }
                 self.run_sel = 0;
                 self.inspect = Inspect::default();
                 self.screen = Screen::Run;
             }
+            KeyCode::Char('s') if gap => {
+                run.skip_gaps();
+                self.screen = Screen::Run;
+            }
+            KeyCode::Esc if gap => self.screen = Screen::Home,
             KeyCode::Esc => {
                 self.modal = Modal::Confirm(Confirm {
                     kind: ConfirmKind::CancelReview,

@@ -9,11 +9,12 @@ Multi-agent deep research in your terminal, powered by your ChatGPT plan.
 You ask a question; rsc runs this pipeline:
 
 1. A planner does a few web searches and may ask up to 3 clarifying questions, over at most 2 rounds. Submitting empty answers skips them.
-2. You review and edit the research angles (1–99).
+2. You review and edit the research angles (1–99). With `default_agents = 0` (the default) the planner picks 2–8; the Review screen warns when two angles look alike.
 3. Researchers run in parallel, each with web search. They can optionally use `fetch_url`.
-4. A synthesizer writes a single cited Markdown report.
+4. Optionally, a reviewer reads the first-round reports and proposes follow-up researchers (`gap_round`); you approve or skip them.
+5. A synthesizer writes a single cited Markdown report. With more than 8 reports it merges them in groups first.
 
-The Run screen shows each agent's live timeline: reasoning summaries, searches, opened pages and the draft as it streams. Reports open in a viewer and can be saved as `.md`. The final report cites sources by number and ends with a `## Sources` list; a Sources tab in the viewer lists every URL the agents cited or opened (Enter opens it, `c` copies it).
+The Run screen shows each agent's live timeline: reasoning summaries, searches, opened pages and the draft as it streams. Reports open in a viewer and can be saved as `.md`. The final report cites sources by number and ends with a `## Sources` list; a Sources tab in the viewer lists every URL the agents cited or opened (Enter opens it, `c` copies it). Cited links are probed and marked when dead; a cited URL no agent opened or got from search is marked model-supplied; with `verify_citations` (or `rsc run --verify`) a model checks each cited page against the claims that cite it, and `v` on the Sources tab shows the verdicts.
 
 ## Requirements
 
@@ -67,13 +68,13 @@ Global keys:
 ## Headless use
 
 ```sh
-rsc run "<question>" [--agents N] [--yes] [--no-clarify] [-o FILE] [--json]
+rsc run "<question>" [--agents N|auto] [--verify] [--yes] [--no-clarify] [-o FILE] [--json]
 rsc resume <id> [--yes] [--no-clarify] [-o FILE] [--json]
 rsc ls
 rsc show <id>
 ```
 
-`rsc run` works without a terminal. Progress goes to stderr and the report to stdout (or to `-o FILE`). Without a terminal on stdin and stderr, clarifying questions are skipped and `--yes` is required to accept the plan; in a terminal, rsc asks. `--json` prints a summary object on stdout instead of the report. `rsc resume` continues a failed, cancelled or interrupted run; don't resume a run that is still open in another rsc.
+`rsc run` works without a terminal. Progress goes to stderr and the report to stdout (or to `-o FILE`). Without a terminal on stdin and stderr, clarifying questions are skipped and `--yes` is required to accept the plan; in a terminal, rsc asks. `--json` prints a summary object on stdout instead of the report; it includes `citations` (live/dead/unknown links, model-supplied and invalid citation numbers, verdict counts). `python3 evals/eval.py run` records these per question and `python3 evals/eval.py diff` compares two result files; it spends plan usage, so run it by hand. `rsc resume` continues a failed, cancelled or interrupted run; don't resume a run that is still open in another rsc.
 
 Exit codes: `0` done, `1` failed or usage error, `2` done but a budget cap stopped research early, `130` cancelled (Ctrl+C or declining the plan).
 
@@ -100,6 +101,7 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 - API requests are sent with `store: false`. Whether OpenAI may train on your data is set by your ChatGPT account's Data Controls.
 - `fetch_url` is off by default. When on, it downloads http(s) URLs the model picks, from your machine. rsc refuses loopback, private, link-local, unique-local, CGNAT and other non-public addresses, including through redirects (max 5) and DNS. It ignores system proxy settings so this check always applies.
 - Pages can contain instructions aimed at the model (prompt injection). rsc marks fetched text as untrusted, but a prompt cannot fully prevent a model from, for example, putting your question into a URL it fetches. The site would then see it. Leave `fetch_url` off if that matters.
+- `check_links` (on by default) sends a HEAD, then if needed a GET, to each URL cited in the final report, from your machine; sites see your IP. It uses the same address guard as `fetch_url` and never reads the body. `verify_citations` additionally downloads cited pages and sends their text to the compactor model.
 - Unless `check_updates` is off, each launch sends one unauthenticated request to `api.github.com` to check for releases.
 
 ## Configuration
@@ -112,7 +114,7 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `researcher` | `{model = "", effort = "medium"}` | Empty model = first model in the catalog |
 | `compactor` | `{model = "", effort = "low"}` | Empty model = first model in the catalog |
 | `synthesizer` | `{model = "", effort = "high"}` | Empty model = first model in the catalog |
-| `default_agents` | `4` | Clamped to 1–99 |
+| `default_agents` | `0` | `0` = the planner chooses 2–8; otherwise clamped to 1–99 |
 | `max_parallel` | `3` | Clamped to 1–99 |
 | `report_words` | `0` | `0` = the researcher sizes each report to the problem; otherwise minimum 100 |
 | `report_style` | `""` | Instructions for how the final report and chat answers are written, e.g. `Explain like I'm 5`. Applies to new runs |
@@ -122,6 +124,9 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `max_run_tokens` | `0` | Run budget in tokens (all stages); `0` = no cap. When reached, no new researchers start, running ones write their report, and synthesis completes. The report notes it. |
 | `max_run_cost_usd` | `0` | Same cap in estimated USD from `pricing.toml`; models without rates count only web-search cost. |
 | `fetch_url_enabled` | `false` | |
+| `check_links` | `true` | Probe cited URLs and flag dead ones |
+| `verify_citations` | `false` | Check each cited page against the claims that cite it (extra model calls) |
+| `gap_round` | `false` | After the first round, a reviewer may propose follow-up researchers for you to approve |
 | `check_updates` | `true` | Check GitHub for a newer release on launch |
 
 Most of these are editable in Settings (`Ctrl+O`). If `config.toml` is invalid, rsc falls back to the defaults and shows a banner.

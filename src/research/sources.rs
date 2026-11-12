@@ -1,7 +1,8 @@
 //! Source tracking: URLs cited or opened by agents, and numbered citations in the final report.
 
-use super::store::Source;
+use super::store::{LinkStatus, Source};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 /// Canonical form used to dedupe: http(s) only, no fragment, no `utm_*` query pairs.
 pub fn normalize(raw: &str) -> Option<String> {
@@ -106,17 +107,29 @@ pub fn links(text: &str) -> Vec<(String, String)> {
 }
 
 /// Add sightings to `sources`. `agent` is the researcher index; `None` is the synthesizer (cited in the final report).
-pub fn merge(sources: &mut Vec<Source>, found: Vec<(String, String)>, agent: Option<usize>) {
+/// `grounded`: the sighting is a search annotation or an opened page, not just a link in model text.
+pub fn merge(sources: &mut Vec<Source>, found: Vec<(String, String)>, agent: Option<usize>, grounded: bool) {
     for (raw, title) in found {
         let Some(url) = normalize(&raw) else { continue };
         let i = match sources.iter().position(|s| s.url == url) {
             Some(i) => i,
             None => {
-                sources.push(Source { url, title: String::new(), agents: vec![], in_final: false });
+                sources.push(Source {
+                    url,
+                    title: String::new(),
+                    agents: vec![],
+                    in_final: false,
+                    status: LinkStatus::Unchecked,
+                    model_supplied: !grounded,
+                    verdicts: vec![],
+                });
                 sources.len() - 1
             }
         };
         let s = &mut sources[i];
+        if grounded {
+            s.model_supplied = false;
+        }
         if s.title.is_empty() && !title.trim().is_empty() {
             s.title = title.split_whitespace().collect::<Vec<_>>().join(" ");
         }
@@ -178,12 +191,98 @@ pub fn render_list(sources: &[Source], keep: impl Fn(&Source) -> bool) -> String
     let mut out = String::new();
     for (i, s) in sources.iter().enumerate().filter(|(_, s)| keep(s)) {
         if s.title.is_empty() {
-            out.push_str(&format!("- [{}] {}\n", i + 1, s.url));
+            out.push_str(&format!("- [{}] {}", i + 1, s.url));
         } else {
-            out.push_str(&format!("- [{}] {} — {}\n", i + 1, s.title, s.url));
+            out.push_str(&format!("- [{}] {} — {}", i + 1, s.title, s.url));
+        }
+        if s.status == LinkStatus::Dead {
+            out.push_str(" (dead link)");
+        }
+        if s.model_supplied {
+            out.push_str(" (model-supplied)");
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The `cited_numbers(text)` entries that are not in `listed`; sorted and unique.
+pub fn unlisted(text: &str, listed: &[usize]) -> Vec<usize> {
+    cited_numbers(text).into_iter().filter(|n| !listed.contains(n)).collect()
+}
+
+/// Split a line after `.`, `?` or `!` followed by whitespace. A `[n]` citation right after the
+/// boundary (and its trailing period) stays with the previous sentence.
+fn sentences(line: &str) -> Vec<&str> {
+    let b = line.as_bytes();
+    let (mut out, mut start, mut i) = (vec![], 0, 0);
+    while i < b.len() {
+        if matches!(b[i], b'.' | b'?' | b'!') {
+            let rest = &line[i + 1..];
+            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                let trimmed = rest.trim_start();
+                let mut end = i + 1;
+                if trimmed.starts_with('[')
+                    && let Some(close) = trimmed.find(']')
+                    && !cited_numbers(&trimmed[..=close]).is_empty()
+                {
+                    end = line.len() - trimmed.len() + close + 1;
+                    if line[end..].starts_with(['.', '?', '!']) {
+                        end += 1;
+                    }
+                }
+                out.push(&line[start..end]);
+                start = end;
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    if start < line.len() {
+        out.push(&line[start..]);
+    }
+    out
+}
+
+const MAX_CLAIMS_PER_SOURCE: usize = 5;
+const MAX_CLAIM_CHARS: usize = 400;
+
+/// Each cited number with the sentences that cite it (at most 5, no duplicates). Headings are skipped.
+pub fn claims(text: &str) -> BTreeMap<usize, Vec<String>> {
+    let mut out: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let line = strip_list_marker(line);
+        for s in sentences(line) {
+            let s = s.trim();
+            if s.is_empty() {
+                continue;
+            }
+            let s = super::tools::truncate_chars(s, MAX_CLAIM_CHARS);
+            for n in cited_numbers(&s) {
+                let v = out.entry(n).or_default();
+                if v.len() < MAX_CLAIMS_PER_SOURCE && !v.contains(&s) {
+                    v.push(s.clone());
+                }
+            }
         }
     }
     out
+}
+
+fn strip_list_marker(line: &str) -> &str {
+    if let Some(r) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+        return r.trim_start();
+    }
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    match line[digits..].strip_prefix(". ") {
+        Some(r) if digits > 0 => r.trim_start(),
+        _ => line,
+    }
 }
 
 #[cfg(test)]
@@ -192,7 +291,15 @@ mod tests {
     use serde_json::json;
 
     fn src(url: &str) -> Source {
-        Source { url: url.into(), title: String::new(), agents: vec![], in_final: false }
+        Source {
+            url: url.into(),
+            title: String::new(),
+            agents: vec![],
+            in_final: false,
+            status: LinkStatus::Unchecked,
+            model_supplied: false,
+            verdicts: vec![],
+        }
     }
 
     #[test]
@@ -217,14 +324,17 @@ mod tests {
     #[test]
     fn merge_dedupes_and_tracks_agents() {
         let mut s = vec![];
-        merge(&mut s, vec![("https://a.com/x?utm_source=openai".into(), String::new())], Some(2));
-        merge(&mut s, vec![("https://a.com/x".into(), " The\n Title ".into())], Some(0));
-        merge(&mut s, vec![("https://a.com/x".into(), "Other".into())], Some(2));
+        merge(&mut s, vec![("https://a.com/x?utm_source=openai".into(), String::new())], Some(2), false);
+        assert!(s[0].model_supplied);
+        merge(&mut s, vec![("https://a.com/x".into(), " The\n Title ".into())], Some(0), true);
+        assert!(!s[0].model_supplied);
+        merge(&mut s, vec![("https://a.com/x".into(), "Other".into())], Some(2), false);
+        assert!(!s[0].model_supplied);
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].agents, vec![0, 2]);
         assert_eq!(s[0].title, "The Title");
         assert!(!s[0].in_final);
-        merge(&mut s, vec![("https://a.com/x".into(), String::new())], None);
+        merge(&mut s, vec![("https://a.com/x".into(), String::new())], None, true);
         assert!(s[0].in_final);
     }
 
@@ -259,5 +369,31 @@ mod tests {
         s[1].title = "B".into();
         assert_eq!(render_list(&s, |x| x.url.contains("b.com")), "- [2] B — https://b.com/\n");
         assert_eq!(render_list(&s, |_| true), "- [1] https://a.com/\n- [2] B — https://b.com/\n");
+        s[0].status = LinkStatus::Dead;
+        s[1].model_supplied = true;
+        s[0].model_supplied = true;
+        assert_eq!(
+            render_list(&s, |_| true),
+            "- [1] https://a.com/ (dead link) (model-supplied)\n- [2] B — https://b.com/ (model-supplied)\n"
+        );
+    }
+
+    #[test]
+    fn unlisted_finds_unknown_numbers() {
+        assert_eq!(unlisted("a [1] b [2, 7]", &[1, 2]), vec![7]);
+    }
+
+    #[test]
+    fn claims_split_sentences_and_keep_trailing_citations() {
+        let c = claims("A is B [1]. C is D [2, 3].");
+        assert_eq!(c[&1], vec!["A is B [1].".to_string()]);
+        assert_eq!(c[&2], vec!["C is D [2, 3].".to_string()]);
+        assert_eq!(c[&3], c[&2]);
+        let c = claims("X grew 5%. [4] Y fell.");
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[&4], vec!["X grew 5%. [4]".to_string()]);
+        assert!(claims("## H [9]").is_empty());
+        let c = claims("- item one [1]\n2. item two [1]");
+        assert_eq!(c[&1], vec!["item one [1]".to_string(), "item two [1]".to_string()]);
     }
 }

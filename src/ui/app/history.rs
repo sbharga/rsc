@@ -41,7 +41,7 @@ impl App {
                 }
                 match rec.status {
                     RunStatus::Done => self.open_record_viewer(&rec),
-                    RunStatus::Review | RunStatus::Clarifying => self.resume_from_history(rec),
+                    RunStatus::Review | RunStatus::GapReview | RunStatus::Clarifying => self.resume_from_history(rec),
                     _ => {
                         let mut lines = vec![format!("{} · {}", rec.status.label(), fmt::one_line(&rec.question))];
                         if let Some(e) = &rec.error {

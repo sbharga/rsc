@@ -142,6 +142,26 @@ impl App {
                     self.toast("URL copied");
                 }
             }
+            KeyCode::Char('v') => {
+                if let Some(s) = v.sources.get(v.src_sel) {
+                    if s.verdicts.is_empty() {
+                        self.toast("No citation check for this source");
+                    } else {
+                        let name = if s.title.is_empty() { s.url.clone() } else { s.title.clone() };
+                        let mut lines = vec![format!("[{}] {}", v.src_sel + 1, name), String::new()];
+                        for d in &s.verdicts {
+                            let mark = match d.verdict {
+                                Support::Supported => '✓',
+                                Support::Partial => '~',
+                                Support::Unsupported => '✗',
+                            };
+                            lines.push(format!("{mark} {}", d.claim));
+                            lines.push(format!("   {}", d.note));
+                        }
+                        self.modal = Modal::Detail(lines);
+                    }
+                }
+            }
             _ => return false,
         }
         true
@@ -199,6 +219,7 @@ impl Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::research::store::LinkStatus;
 
     fn viewer(tabs: usize, sources: usize) -> Viewer {
         let tab = |i: usize| ViewTab {
@@ -222,6 +243,9 @@ mod tests {
                     title: String::new(),
                     agents: vec![],
                     in_final: false,
+                    status: LinkStatus::Unchecked,
+                    model_supplied: false,
+                    verdicts: vec![],
                 })
                 .collect(),
             src_sel: 0,

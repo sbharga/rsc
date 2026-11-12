@@ -16,16 +16,24 @@ pub enum Kind {
     Researcher(String),
     Compactor,
     Synth,
+    GroupSynth,
+    Gaps,
+    Verify,
 }
 
 fn classify(body: &Value) -> Kind {
-    if body["text"]["format"]["name"] == "plan" {
-        return Kind::Planner;
+    match body["text"]["format"]["name"].as_str() {
+        Some("plan") => return Kind::Planner,
+        Some("gaps") => return Kind::Gaps,
+        Some("verify") => return Kind::Verify,
+        _ => {}
     }
     let ins = body["instructions"].as_str().unwrap_or("");
     if ins.starts_with("You are one of several researchers") {
         let title = ins.split("Your angle: ").nth(1).and_then(|r| r.split(" — ").next()).unwrap_or("");
         Kind::Researcher(title.to_string())
+    } else if ins.starts_with("Merge these researcher reports") {
+        Kind::GroupSynth
     } else if ins.starts_with("Several researchers") {
         Kind::Synth
     } else {
@@ -64,6 +72,11 @@ pub fn plan(titles: &[&str]) -> Value {
     msg(&json!({"understanding":"u","notes":"n","questions":[],"perspectives":ps}).to_string())
 }
 
+pub fn gaps(titles: &[&str]) -> Value {
+    let gs: Vec<Value> = titles.iter().map(|t| json!({"title":t,"brief":"b"})).collect();
+    msg(&json!({"notes":"n","gaps":gs}).to_string())
+}
+
 type Log = Arc<Mutex<Vec<(Kind, Value)>>>;
 
 pub struct Mock {
@@ -95,6 +108,11 @@ impl Mock {
 
     pub fn bodies(&self, k: &Kind) -> Vec<Value> {
         self.log.lock().unwrap().iter().filter(|(kind, _)| kind == k).map(|(_, b)| b.clone()).collect()
+    }
+
+    /// Number of logged `/responses` requests.
+    pub fn total(&self) -> usize {
+        self.log.lock().unwrap().len()
     }
 
     /// Every HTTP request, including `/models`.
@@ -198,7 +216,7 @@ pub struct Env {
 }
 
 impl Env {
-    /// `config_toml` is appended to a base config; it must not repeat any key.
+    /// `config_toml` is appended to a base config (offline, few turns); keys it sets override the base keys.
     pub async fn new(config_toml: &str, handler: impl Fn(&Req) -> Reply + Send + Sync + 'static) -> Env {
         let mock = Mock::start(handler).await;
         let home = std::env::temp_dir().join(format!("rsc-e2e-{}", uuid::Uuid::new_v4()));
@@ -215,8 +233,12 @@ impl Env {
         });
         std::fs::write(root.join("accounts").join(format!("{id}.json")), acct.to_string()).unwrap();
         std::fs::write(root.join("state.json"), json!({"active_account": id}).to_string()).unwrap();
-        std::fs::write(root.join("config.toml"), format!("check_updates = false\nmax_turns = 5\n{config_toml}"))
-            .unwrap();
+        let base: String = [("check_updates", "false"), ("max_turns", "5"), ("check_links", "false")]
+            .iter()
+            .filter(|(k, _)| !config_toml.lines().any(|l| l.trim_start().starts_with(&format!("{k} ="))))
+            .map(|(k, v)| format!("{k} = {v}\n"))
+            .collect();
+        std::fs::write(root.join("config.toml"), format!("{base}{config_toml}")).unwrap();
         Env { home, mock }
     }
 

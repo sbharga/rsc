@@ -1,7 +1,7 @@
 //! Planner and clarification loop.
 
 use super::*;
-use crate::config::MAX_AGENTS;
+use crate::config::{AUTO_MAX_AGENTS, AUTO_MIN_AGENTS, MAX_AGENTS};
 use store::Clarification;
 
 const MAX_CLARIFY_ROUNDS: u8 = 2;
@@ -32,7 +32,7 @@ struct PlanReply {
     outcome: PlanOutcome,
 }
 
-fn parse_plan(text: &str, force: bool) -> Option<PlanReply> {
+fn parse_plan(text: &str, force: bool, max: usize) -> Option<PlanReply> {
     let v: Value = serde_json::from_str(text).ok()?;
     let field = |k: &str| v[k].as_str().unwrap_or("").trim().to_string();
     let questions: Vec<String> = v["questions"]
@@ -56,7 +56,7 @@ fn parse_plan(text: &str, force: bool) -> Option<PlanReply> {
                         brief: p["brief"].as_str()?.trim().to_string(),
                     })
                 })
-                .take(MAX_AGENTS as usize)
+                .take(max)
                 .collect()
         })
         .unwrap_or_default();
@@ -68,6 +68,100 @@ fn parse_plan(text: &str, force: bool) -> Option<PlanReply> {
         return None;
     };
     Some(PlanReply { understanding: field("understanding"), notes: field("notes"), outcome })
+}
+
+/// Planner system prompt. `n` researchers exactly, or `0` = the planner chooses within the auto bounds.
+fn planner_instructions(n: u8, force: bool) -> String {
+    let (team, step3) = if n > 0 {
+        (
+            format!("a team of {n} independent researchers"),
+            format!(
+                "return exactly {n} `perspectives`, each with a short title and a 2–3 sentence brief telling that researcher precisely what to investigate and what to leave to the others."
+            ),
+        )
+    } else {
+        (
+            "a team of independent researchers".to_string(),
+            format!(
+                "return between {AUTO_MIN_AGENTS} and {AUTO_MAX_AGENTS} `perspectives`, as many as the request has genuinely distinct parts: 2–3 for a narrow factual lookup, 4–6 for a comparison or multi-part question, up to {AUTO_MAX_AGENTS} for a broad or contested topic. Each has a short title and a 2–3 sentence brief telling that researcher precisely what to investigate and what to leave to the others; angles must not overlap."
+            ),
+        )
+    };
+    let mut s = format!(
+        "You plan research for {team}. First make sure you understand exactly what the user wants, then give each researcher a distinct assignment.\n\n\
+1. Do light research: at most 3 quick web searches to learn key terms, the current state of the topic and what matters for scoping. Do not research in depth — the researchers will.\n\
+2. If the request is ambiguous in a way that would change what the researchers should do (scope, audience, timeframe, region, depth, constraints, or the kind of answer wanted), put up to 3 short, specific questions in `questions` and leave `perspectives` empty. Do not ask about anything you can reasonably assume.\n\
+3. Otherwise leave `questions` empty and {step3}\n\n\
+Always fill `understanding` with 1–3 sentences stating what the user is asking for, including any constraints from their answers, and `notes` with the key facts you found (with source URLs) that shaped the plan."
+    );
+    if force {
+        s.push_str("\n\nDo not ask any more questions: `questions` must be empty and you must return the perspectives now, making reasonable assumptions where needed.");
+    }
+    s
+}
+
+const STOPWORDS: [&str; 33] = [
+    "this",
+    "that",
+    "with",
+    "from",
+    "what",
+    "which",
+    "their",
+    "about",
+    "into",
+    "than",
+    "them",
+    "they",
+    "have",
+    "will",
+    "each",
+    "other",
+    "also",
+    "such",
+    "more",
+    "most",
+    "should",
+    "these",
+    "those",
+    "researcher",
+    "researchers",
+    "investigate",
+    "focus",
+    "including",
+    "does",
+    "when",
+    "where",
+    "while",
+    "between",
+];
+
+fn angle_words(p: &Perspective) -> std::collections::HashSet<String> {
+    format!("{} {}", p.title, p.brief)
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 4 && !STOPWORDS.contains(w))
+        .map(String::from)
+        .collect()
+}
+
+/// Pairs (i < j) of angles whose wording overlaps enough to suggest duplicate work.
+pub fn overlaps(ps: &[Perspective]) -> Vec<(usize, usize)> {
+    let words: Vec<_> = ps.iter().map(angle_words).collect();
+    let mut out = vec![];
+    for i in 0..ps.len() {
+        for j in i + 1..ps.len() {
+            if words[i].is_empty() || words[j].is_empty() {
+                continue;
+            }
+            let both = words[i].intersection(&words[j]).count() as f64;
+            let either = words[i].union(&words[j]).count() as f64;
+            if both / either >= 0.4 {
+                out.push((i, j));
+            }
+        }
+    }
+    out
 }
 
 impl Run {
@@ -139,16 +233,8 @@ impl Run {
                     "properties":{"title":{"type":"string"},"brief":{"type":"string"}},
                     "required":["title","brief"],"additionalProperties":false}}},
             "required":["understanding","notes","questions","perspectives"],"additionalProperties":false}});
-        let mut instructions = format!(
-            "You plan research for a team of {n} independent researchers. First make sure you understand exactly what the user wants, then give each researcher a distinct assignment.\n\n\
-1. Do light research: at most 3 quick web searches to learn key terms, the current state of the topic and what matters for scoping. Do not research in depth — the researchers will.\n\
-2. If the request is ambiguous in a way that would change what the researchers should do (scope, audience, timeframe, region, depth, constraints, or the kind of answer wanted), put up to 3 short, specific questions in `questions` and leave `perspectives` empty. Do not ask about anything you can reasonably assume.\n\
-3. Otherwise leave `questions` empty and return exactly {n} `perspectives`, each with a short title and a 2–3 sentence brief telling that researcher precisely what to investigate and what to leave to the others.\n\n\
-Always fill `understanding` with 1–3 sentences stating what the user is asking for, including any constraints from their answers, and `notes` with the key facts you found (with source URLs) that shaped the plan."
-        );
-        if force {
-            instructions.push_str("\n\nDo not ask any more questions: `questions` must be empty and you must return the perspectives now, making reasonable assumptions where needed.");
-        }
+        let instructions = planner_instructions(n, force);
+        let max = if n == 0 { AUTO_MAX_AGENTS } else { MAX_AGENTS } as usize;
         let req = ResponseRequest {
             model: sm.model.clone(),
             instructions,
@@ -162,8 +248,8 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
         let done = self.call(&req, Some(&self.forwarder(Target::Planner))).await?;
         self.add_usage(Scope::Planner, done.usage);
         let text = output_text(&done.output);
-        let r =
-            parse_plan(&text, force).ok_or_else(|| ApiError::new(ErrKind::Fatal, "Planner returned invalid plan"))?;
+        let r = parse_plan(&text, force, max)
+            .ok_or_else(|| ApiError::new(ErrKind::Fatal, "Planner returned invalid plan"))?;
         self.with(|s| {
             if !r.understanding.is_empty() {
                 s.record.understanding = r.understanding;
@@ -183,17 +269,44 @@ mod tests {
     #[test]
     fn parse_plan_prefers_questions_unless_forced() {
         let t = r#"{"understanding":" u ","notes":"n","questions":["a","b","c","d"," "],"perspectives":[{"title":"T","brief":"B"}]}"#;
-        let q = parse_plan(t, false).unwrap();
+        let q = parse_plan(t, false, MAX_AGENTS as usize).unwrap();
         assert_eq!(q.understanding, "u");
         assert_eq!(q.outcome, PlanOutcome::Questions(vec!["a".into(), "b".into(), "c".into()]));
-        let p = parse_plan(t, true).unwrap();
+        let p = parse_plan(t, true, MAX_AGENTS as usize).unwrap();
         assert_eq!(p.outcome, PlanOutcome::Plan(vec![Perspective { title: "T".into(), brief: "B".into() }]));
     }
 
     #[test]
     fn parse_plan_rejects_empty() {
         let t = r#"{"understanding":"u","notes":"","questions":[],"perspectives":[]}"#;
-        assert!(parse_plan(t, false).is_none());
-        assert!(parse_plan(t, true).is_none());
+        assert!(parse_plan(t, false, MAX_AGENTS as usize).is_none());
+        assert!(parse_plan(t, true, MAX_AGENTS as usize).is_none());
+    }
+
+    #[test]
+    fn planner_instructions_auto_vs_pinned() {
+        let pinned = planner_instructions(3, false);
+        assert!(pinned.contains("exactly 3 `perspectives`"));
+        let auto = planner_instructions(0, true);
+        assert!(auto.contains("between 2 and 8") && !auto.contains("return exactly"));
+        assert!(auto.contains("Do not ask any more questions"));
+    }
+
+    fn angle(t: &str, b: &str) -> Perspective {
+        Perspective { title: t.into(), brief: b.into() }
+    }
+
+    #[test]
+    fn overlaps_flags_similar_angles_only() {
+        let a = angle(
+            "Solid-state battery costs",
+            "Estimate manufacturing costs of solid-state battery cells and how they compare with lithium-ion cells.",
+        );
+        let b = angle(
+            "Solid-state battery cost outlook",
+            "Estimate manufacturing costs for solid-state battery cells and compare them with lithium-ion cells over time.",
+        );
+        let c = angle("Regulation in the EU", "Summarize EU rules on battery recycling and import tariffs.");
+        assert_eq!(overlaps(&[a, b, c]), vec![(0, 1)]);
     }
 }

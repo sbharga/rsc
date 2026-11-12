@@ -175,6 +175,9 @@ mod tests {
             report_style: "No jargon".into(),
             max_run_tokens: 0,
             max_run_cost_usd: 0.0,
+            check_links: false,
+            verify_citations: false,
+            gap_round: false,
         };
         let rec = Record::new("Q".into(), cfg);
         let hist = [

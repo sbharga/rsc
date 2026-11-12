@@ -1,3 +1,4 @@
+use super::store::LinkStatus;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -143,7 +144,7 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
     }
 }
 
-async fn fetch(http: &reqwest::Client, url: &str) -> Result<String, String> {
+pub async fn fetch(http: &reqwest::Client, url: &str) -> Result<String, String> {
     let u = url::Url::parse(url).map_err(|e| e.to_string())?;
     if !matches!(u.scheme(), "http" | "https") {
         return Err("only http/https URLs are supported".into());
@@ -196,6 +197,36 @@ async fn fetch(http: &reqwest::Client, url: &str) -> Result<String, String> {
     rand::fill(&mut b[..]);
     let nonce = format!("{:02x}{:02x}{:02x}{:02x}", b[0], b[1], b[2], b[3]);
     Ok(wrap_untrusted(&nonce, &final_url, &truncate_chars(&text, MAX_CHARS)))
+}
+
+fn classify_status(code: u16) -> Option<LinkStatus> {
+    match code {
+        200..=299 => Some(LinkStatus::Live),
+        404 | 410 => Some(LinkStatus::Dead),
+        _ => None,
+    }
+}
+
+/// Is `url` still served? HEAD first, then GET (status only, the body is never read). Blocked addresses and
+/// anything inconclusive are `Unknown`.
+pub async fn probe(http: &reqwest::Client, url: &str) -> LinkStatus {
+    let Ok(u) = url::Url::parse(url) else { return LinkStatus::Unknown };
+    if !matches!(u.scheme(), "http" | "https") || url_blocked(&u) {
+        return LinkStatus::Unknown;
+    }
+    match http.head(u.clone()).send().await {
+        Ok(r) => {
+            if let Some(s) = classify_status(r.status().as_u16()) {
+                return s;
+            }
+        }
+        Err(e) if is_blocked_err(&e) => return LinkStatus::Unknown,
+        Err(_) => {}
+    }
+    match http.get(u).send().await {
+        Ok(r) => classify_status(r.status().as_u16()).unwrap_or(LinkStatus::Unknown),
+        Err(_) => LinkStatus::Unknown,
+    }
 }
 
 /// Execute a model-issued function call; the result is always a string for the model.
@@ -289,7 +320,9 @@ mod tests {
                         }
                     }
                     let req = String::from_utf8_lossy(&buf);
-                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let mut words = req.split_whitespace();
+                    let head = words.next() == Some("HEAD");
+                    let path = words.next().unwrap_or("/").to_string();
                     let port = addr.port();
                     let redirect = |to: String| format!("302 Found\r\nLocation: {to}\r\n");
                     let (status, body) = match path.as_str() {
@@ -297,6 +330,9 @@ mod tests {
                         "/to-ip" => (redirect(format!("http://127.0.0.1:{port}/ok")), ""),
                         "/to-localhost" => (redirect(format!("http://localhost:{port}/ok")), ""),
                         "/loop" => (redirect("/loop".into()), ""),
+                        "/gone" => ("404 Not Found\r\n".to_string(), ""),
+                        "/nohead" if head => ("405 Method Not Allowed\r\n".to_string(), ""),
+                        "/nohead" => ("200 OK\r\nContent-Type: text/plain\r\n".to_string(), "hello"),
                         _ => ("404 Not Found\r\n".to_string(), ""),
                     };
                     let resp =
@@ -324,5 +360,18 @@ mod tests {
         assert_eq!(get("/to-ip").await, "error: blocked address");
         let looped = get("/loop").await;
         assert!(looped.starts_with("error:") && looped != "error: blocked address", "{looped}");
+    }
+
+    #[tokio::test]
+    async fn probe_classifies() {
+        let addr = serve().await;
+        let port = addr.port();
+        let h = fetch_builder().resolve("public.test", addr).build().unwrap();
+        let url = |p: &str| format!("http://public.test:{port}{p}");
+        assert_eq!(probe(&h, &url("/ok")).await, LinkStatus::Live);
+        assert_eq!(probe(&h, &url("/gone")).await, LinkStatus::Dead);
+        assert_eq!(probe(&h, &url("/nohead")).await, LinkStatus::Live);
+        assert_eq!(probe(&h, &url("/to-localhost")).await, LinkStatus::Unknown);
+        assert_eq!(probe(&h, "http://127.0.0.1:9/").await, LinkStatus::Unknown);
     }
 }

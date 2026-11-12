@@ -1,6 +1,6 @@
 # Roadmap
 
-State at v0.0.4: the pipeline (plan → clarify → review → research → synthesize), live agent timelines, source tracking with `[n]` citations, follow-up chat, resume, history, cost estimates, installer and self-update all work. Phase 0 (safety and trust) shipped in 0.0.3: `fetch_url` is SSRF-guarded, the updater is pinned to the release tag, and runs can be capped by tokens or cost. Phase 1 (foundations) shipped in 0.0.4: headless `rsc run`/`resume`/`ls`/`show`, a mock API with end-to-end tests, agent checkpoints and restarts, and the large files split. Single binary, Linux and macOS, ChatGPT sign-in only. Next is Phase 2 (report quality), starting with the eval harness.
+State at v0.1.0 (pre-release): the pipeline (plan → clarify → review → research → synthesize), live agent timelines, source tracking with `[n]` citations, follow-up chat, resume, history, cost estimates, installer and self-update all work. Phase 0 (safety and trust) shipped in 0.0.3: `fetch_url` is SSRF-guarded, the updater is pinned to the release tag, and runs can be capped by tokens or cost. Phase 1 (foundations) shipped in 0.0.4: headless `rsc run`/`resume`/`ls`/`show`, a mock API with end-to-end tests, agent checkpoints and restarts, and the large files split. Single binary, Linux and macOS, ChatGPT sign-in only. Phase 2 (report quality) is implemented in 0.1.0: eval harness, citation checks, auto agent count with overlap warnings, hierarchical synthesis and an opt-in follow-up round. The live eval baseline and planner-prompt tuning against it are still to do.
 
 This document orders the next work by when it should be done and why. Order follows three rules:
 
@@ -16,9 +16,9 @@ Sizes: **S** ≤ 1 day, **M** 2–5 days, **L** > 1 week. Phases are ordered; it
 |---|---|---|---|---|
 | 0 | Safety and trust | 0.0.3 (done) | Close known holes | `fetch_url` cannot reach private addresses; updater pinned to the release tag; run budget cap works |
 | 1 | Foundations | 0.0.4 (done) | Testability, headless mode, resilience | A full run is exercised in `cargo test` against a mock API; `rsc run` works with no TTY |
-| 2 | Report quality | 0.2.0 | Make the output measurably better | Eval suite shows citation validity and coverage improving release over release |
-| 3 | Workflow | 0.3.0 | Export, search, presets, local context | Users can get a report out of rsc and into other tools without copy-paste |
-| 4 | Distribution | 0.4.0 | Windows, packaging, supply chain | Install works without a C toolchain; signed artifacts |
+| 2 | Report quality | 0.1.0 (pre-release) | Make the output measurably better | Eval suite shows citation validity and coverage improving release over release |
+| 3 | Workflow | 0.2.0 | Export, search, presets, local context | Users can get a report out of rsc and into other tools without copy-paste |
+| 4 | Distribution | 0.3.0 | Windows, packaging, supply chain | Install works without a C toolchain; signed artifacts |
 | 5 | Extensibility | later | Providers, tools, knowledge reuse | Decide after real usage data |
 
 ---
@@ -63,7 +63,7 @@ Carried over:
 
 ---
 
-## Phase 2 — Report quality (0.2.0)
+## Phase 2 — Report quality (0.1.0) — implemented, pre-release
 
 The product's value is the report. Measure first, then change.
 
@@ -99,7 +99,7 @@ After the first reports, a reviewer step lists unanswered sub-questions and cont
 
 ---
 
-## Phase 3 — Workflow (0.3.0)
+## Phase 3 — Workflow (0.2.0)
 
 ### 3.1 Export — S/M
 - `rsc export <id> [--format md|html|json]`, plus an `e` key in the viewer. Markdown output with front matter (question, date, models, cost, source list). Self-contained HTML with inlined CSS.
@@ -125,7 +125,7 @@ Let a follow-up chat answer say "this needs new research" and, on user confirmat
 
 ---
 
-## Phase 4 — Distribution (0.4.0)
+## Phase 4 — Distribution (0.3.0)
 
 ### 4.1 Remove the C toolchain requirement — M
 README requires `cmake` and a C toolchain because `aws-lc-sys` backs rustls. Evaluate switching the rustls crypto provider to `ring` (or using prebuilt `aws-lc` with `fips` off) so `cargo install` works on a plain Rust install. Confirm it still passes the release matrix.

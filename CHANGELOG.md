@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0
+
+- Citation checking: cited links are probed (`check_links`, on by default) and dead ones are flagged; cited URLs no agent opened are marked model-supplied; `[n]` numbers missing from the Sources list are recorded; opt-in `verify_citations` / `rsc run --verify` checks cited pages against the claims that cite them (`v` on the Sources tab).
+- Planner: `default_agents = 0` (new default) lets the planner choose 2–8 angles; `--agents auto`; the Review screen and `rsc run` warn about overlapping angles.
+- Hierarchical synthesis: more than 8 finished reports are merged in groups before the final synthesis.
+- Opt-in follow-up round (`gap_round`): a reviewer proposes up to 4 more researchers; approve or skip on the Review screen, with `--yes`, or at the prompt. New run status `gap review`: older binaries cannot read records saved in that status.
+- `rsc run --json` adds `report_words`, `agents_failed`, `gap_agents`, `config` and `citations`.
+- `evals/`: 20 fixed questions and `python3 evals/eval.py run|diff` to record and compare results across commits. Spends plan usage; run by hand.
+
 ## 0.0.4
 
 - Headless commands: `rsc run`, `rsc resume`, `rsc ls` and `rsc show`, with `--yes`, `--no-clarify`, `-o` and `--json`. Exit codes: 0 done, 1 failed, 2 budget hit, 130 cancelled.

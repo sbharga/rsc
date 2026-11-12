@@ -2,7 +2,7 @@ use super::app::*;
 use super::fmt::{self, SPINNER, one_line, pad, trunc};
 use crate::config::MAX_AGENTS;
 use crate::research::LogEntry;
-use crate::research::store::{AgentRec, AgentStatus, RunStatus, progress};
+use crate::research::store::{AgentRec, AgentStatus, LinkStatus, RunStatus, Support, progress};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -67,6 +67,10 @@ struct RunView {
     budget_hit: bool,
     max_run_tokens: u64,
     max_run_cost_usd: f64,
+    gap_round: bool,
+    gap_notes: String,
+    /// Some agent was added by the follow-up round.
+    followup: bool,
 }
 
 fn run_view(app: &App) -> Option<RunView> {
@@ -83,7 +87,11 @@ fn run_view(app: &App) -> Option<RunView> {
             badge: fmt::badge(&s.record),
             error: s.record.error.as_ref().map(|e| (e.message.clone(), e.request_id.clone())),
             synth_tail: s.synth_text[tail_start..].to_string(),
-            perspectives: s.record.perspectives.clone(),
+            perspectives: if s.record.status == RunStatus::GapReview {
+                s.record.gaps.clone()
+            } else {
+                s.record.perspectives.clone()
+            },
             understanding: s.record.understanding.clone(),
             clarify_rounds: s.record.clarify_rounds,
             questions: s.record.questions.clone(),
@@ -91,6 +99,9 @@ fn run_view(app: &App) -> Option<RunView> {
             budget_hit: s.record.budget_hit,
             max_run_tokens: s.record.config.max_run_tokens,
             max_run_cost_usd: s.record.config.max_run_cost_usd,
+            gap_round: s.record.config.gap_round,
+            gap_notes: s.record.gap_notes.clone(),
+            followup: s.record.agents.iter().any(|a| a.followup),
         }
     }))
 }
@@ -160,10 +171,11 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             if run_shown(app) { format!("{base} · Ctrl+G research") } else { base.to_string() }
         }
         Screen::Clarify => "Enter send (empty = skip) · Tab next · F1 help".to_string(),
+        Screen::Review if gap_review(app) => "Enter launch · s skip · e edit · ? help".to_string(),
         Screen::Review => "Enter launch · e edit · p re-plan · ? help".to_string(),
         Screen::Run => "↑/↓ agent · i inspect · Enter report · ? help".to_string(),
         Screen::Viewer if app.viewer.tabs.get(app.viewer.tab).is_some_and(|t| t.is_sources) => {
-            "↑/↓ select · Enter open · c copy · Tab switch · ? help".to_string()
+            "↑/↓ select · Enter open · c copy · v verdicts · Tab switch · ? help".to_string()
         }
         Screen::Viewer if app.viewer.chat.is_some() => {
             "j/k scroll · Tab/1–9 switch · s save · a chat · ? help".to_string()
@@ -179,6 +191,10 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Screen::Chat => "Enter send · Alt+Enter new line · PgUp/PgDn scroll · Esc back".to_string(),
     };
     f.render_widget(Paragraph::new(Span::styled(format!(" {hint}"), muted())), area);
+}
+
+fn gap_review(app: &App) -> bool {
+    app.run.as_ref().is_some_and(|r| r.status() == RunStatus::GapReview)
 }
 
 fn run_shown(app: &App) -> bool {
@@ -261,7 +277,8 @@ fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
     let stage = |s: &crate::config::StageModel| format!("{}·{}", app.display_name(&app.resolved(s).model), s.effort);
     let sel = |i: usize| h.chips && h.chip == i;
     let mut spans: Vec<Span> = vec![];
-    spans.extend(chip("Agents", h.agents.to_string(), sel(0)));
+    let agents = if h.agents == 0 { "auto".to_string() } else { h.agents.to_string() };
+    spans.extend(chip("Agents", agents, sel(0)));
     spans.extend(chip("Planner", stage(&h.planner), sel(1)));
     spans.extend(chip("Research", stage(&h.researcher), sel(2)));
     spans.extend(chip("Synth", stage(&h.synthesizer), sel(3)));
@@ -292,6 +309,7 @@ fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
             }
             RunStatus::Clarifying => Some(("● Planner has questions — Ctrl+G to answer".to_string(), accent())),
             RunStatus::Review => Some(("● Angles ready — Ctrl+G to review".to_string(), accent())),
+            RunStatus::GapReview => Some(("● Follow-up angles ready — Ctrl+G to review".to_string(), accent())),
             RunStatus::Done => Some(("✓ Research done — Ctrl+G to read".to_string(), Style::new().fg(Color::Green))),
             RunStatus::Failed | RunStatus::Interrupted => {
                 Some((format!("✗ Research {} — Ctrl+G for details", rv.status.label()), Style::new().fg(Color::Red)))
@@ -311,18 +329,27 @@ fn draw_review(f: &mut Frame, app: &mut App, area: Rect) {
         Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(area);
     f.render_widget(Paragraph::new(stage_line(&rv)), stages);
     let w = area.width.saturating_sub(4) as usize;
+    let gap = rv.status == RunStatus::GapReview;
     let mut lines: Vec<Line> = vec![];
-    if !rv.understanding.is_empty() {
+    if gap {
+        lines.push(Line::from(Span::styled("Gaps after the first round", muted())));
+        lines.extend(fmt::wrap(&rv.gap_notes, w).into_iter().map(Line::from));
+        lines.push(Line::raw(""));
+    } else if !rv.understanding.is_empty() {
         lines.push(Line::from(Span::styled("Understood as", muted())));
         lines.extend(fmt::wrap(&rv.understanding, w).into_iter().map(Line::from));
         lines.push(Line::raw(""));
     }
+    let n = rv.perspectives.len();
     lines.push(Line::from(Span::styled(
-        format!("{} angles — one researcher each. Edit freely, then Enter to launch.", rv.perspectives.len()),
+        if gap {
+            format!("{n} follow-up angles — one researcher each. Edit freely, then Enter to launch or s to skip.")
+        } else {
+            format!("{n} angles — one researcher each. Edit freely, then Enter to launch.")
+        },
         muted(),
     )));
-    let n = rv.perspectives.len();
-    let est = EST_OVERHEAD_TOKENS + EST_AGENT_TOKENS * n as u64;
+    let est = if gap { 0 } else { EST_OVERHEAD_TOKENS } + EST_AGENT_TOKENS * n as u64;
     let mut s = format!("Estimate: ~{} for {n} researchers (rough; varies by model and effort)", fmt::tokens(est));
     if rv.max_run_tokens > 0 {
         s.push_str(&format!(" · cap {}", fmt::tokens(rv.max_run_tokens)));
@@ -337,6 +364,7 @@ fn draw_review(f: &mut Frame, app: &mut App, area: Rect) {
     lines.push(Line::raw(""));
     let mut sel_start = 0;
     let mut sel_end = 0;
+    let pairs = crate::research::plan::overlaps(&rv.perspectives);
     for (i, p) in rv.perspectives.iter().enumerate() {
         let selected = i == app.review_sel;
         if selected {
@@ -352,6 +380,25 @@ fn draw_review(f: &mut Frame, app: &mut App, area: Rect) {
         ]));
         for l in fmt::wrap(&p.brief, w) {
             lines.push(Line::from(Span::styled(format!("  {l}"), muted())));
+        }
+        let others: Vec<String> = pairs
+            .iter()
+            .filter_map(|&(a, b)| {
+                if a == i {
+                    Some(b)
+                } else if b == i {
+                    Some(a)
+                } else {
+                    None
+                }
+            })
+            .map(|o| (o + 1).to_string())
+            .collect();
+        if !others.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("  ⚠ overlaps with angle {}", others.join(", ")),
+                Style::new().fg(Color::Yellow),
+            )));
         }
         if selected {
             sel_end = lines.len();
@@ -396,6 +443,12 @@ fn draw_run(f: &mut Frame, app: &mut App, area: Rect) {
     let done = rv.agents.iter().filter(|a| a.status == AgentStatus::Done).count();
     let mut label = match rv.status {
         RunStatus::Planning => format!("Planning · {pct}%"),
+        RunStatus::Researching
+            if rv.gap_round
+                && rv.agents.iter().all(|a| matches!(a.status, AgentStatus::Done | AgentStatus::Failed)) =>
+        {
+            format!("Reviewing gaps · {pct}%")
+        }
         RunStatus::Researching => format!("Researching · {done}/{} done · {pct}%", rv.agents.len()),
         RunStatus::Synthesizing => format!("Synthesizing · {pct}%"),
         s => format!("{} · {pct}%", s.label()),
@@ -511,11 +564,23 @@ fn draw_viewer(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_sources(f: &mut Frame, v: &mut Viewer, area: Rect) {
     let [head, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
     let n = v.sources.len();
-    let cited = v.sources.iter().filter(|s| s.in_final).count();
-    f.render_widget(
-        Paragraph::new(Span::styled(format!("{n} sources · {cited} cited in the final report"), muted())),
-        head,
-    );
+    let final_src = || v.sources.iter().filter(|s| s.in_final);
+    let cited = final_src().count();
+    let dead = final_src().filter(|s| s.status == LinkStatus::Dead).count();
+    let ms = final_src().filter(|s| s.model_supplied).count();
+    let verdicts = || v.sources.iter().flat_map(|s| s.verdicts.iter());
+    let (sup, tot) = (verdicts().filter(|d| d.verdict == Support::Supported).count(), verdicts().count());
+    let mut header = format!("{n} sources · {cited} cited");
+    if dead > 0 {
+        header.push_str(&format!(" · {dead} dead"));
+    }
+    if ms > 0 {
+        header.push_str(&format!(" · {ms} model-supplied"));
+    }
+    if tot > 0 {
+        header.push_str(&format!(" · {sup}/{tot} claims supported"));
+    }
+    f.render_widget(Paragraph::new(Span::styled(header, muted())), head);
 
     v.view_h = list.height;
     let per = (list.height as usize / 2).max(1);
@@ -535,8 +600,29 @@ fn draw_sources(f: &mut Frame, v: &mut Viewer, area: Rect) {
         if s.in_final {
             tag.push_str(if tag.is_empty() { "final" } else { " · final" });
         }
+        let mut tag = vec![Span::styled(tag, muted())];
+        match s.status {
+            LinkStatus::Dead => tag.push(Span::styled(" · dead link", Style::new().fg(Color::Red))),
+            LinkStatus::Unknown => tag.push(Span::styled(" · link ?", muted())),
+            LinkStatus::Live | LinkStatus::Unchecked => {}
+        }
+        if s.model_supplied {
+            tag.push(Span::styled(" · model-supplied", Style::new().fg(Color::Yellow)));
+        }
+        if !s.verdicts.is_empty() {
+            let ok = s.verdicts.iter().filter(|d| d.verdict == Support::Supported).count();
+            let color = if ok == s.verdicts.len() {
+                Color::Green
+            } else if s.verdicts.iter().any(|d| d.verdict == Support::Unsupported) {
+                Color::Red
+            } else {
+                Color::Yellow
+            };
+            tag.push(Span::styled(format!(" · supports {ok}/{}", s.verdicts.len()), Style::new().fg(color)));
+        }
+        let tag_w: usize = tag.iter().map(|t| t.content.width()).sum();
         let title = if s.title.is_empty() { crate::research::tools::host_of(&s.url) } else { one_line(&s.title) };
-        let room = width.saturating_sub(marker.width() + num.width() + tag.width() + 1);
+        let room = width.saturating_sub(marker.width() + num.width() + tag_w + 1);
         let title_style = if selected { sel_style() } else { Style::new() };
         let r1 = Rect::new(list.x, y, list.width, 1);
         f.render_widget(
@@ -547,7 +633,7 @@ fn draw_sources(f: &mut Frame, v: &mut Viewer, area: Rect) {
             ])),
             r1,
         );
-        f.render_widget(Paragraph::new(Span::styled(tag, muted())).alignment(Alignment::Right), r1);
+        f.render_widget(Paragraph::new(Line::from(tag)).alignment(Alignment::Right), r1);
         if y + 1 < list.y + list.height {
             let r2 = Rect::new(list.x, y + 1, list.width, 1);
             f.render_widget(
@@ -620,13 +706,19 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 let sm = app.current_stage(PickScope::Settings, *st);
                 (st.label().into(), format!("{}·{}", app.display_name(&sm.model), sm.effort), "")
             }
-            Row::Num(Num::DefaultAgents) => ("Default agents".into(), app.cfg.default_agents.to_string(), ""),
+            Row::Num(Num::DefaultAgents) => {
+                let v = app.cfg.default_agents;
+                ("Default agents".into(), if v == 0 { "auto".to_string() } else { v.to_string() }, "")
+            }
             Row::Num(Num::MaxParallel) => ("Max parallel agents".into(), app.cfg.max_parallel.to_string(), ""),
             Row::Num(Num::ReportWords) => {
                 let v = app.cfg.report_words;
                 ("Report length (words)".into(), if v == 0 { "auto".to_string() } else { v.to_string() }, "")
             }
             Row::FetchUrl => ("fetch_url tool".into(), on_off(app.cfg.fetch_url_enabled), "sites see your IP"),
+            Row::CheckLinks => ("Check cited links".into(), on_off(app.cfg.check_links), "sites see your IP"),
+            Row::VerifyCitations => ("Verify citations".into(), on_off(app.cfg.verify_citations), "extra model calls"),
+            Row::GapRound => ("Follow-up round".into(), on_off(app.cfg.gap_round), "reviewer may add researchers"),
             Row::CheckUpdates => ("Check for updates".into(), on_off(app.cfg.check_updates), "on launch, via GitHub"),
             Row::ReportStyle => (
                 "Report style".into(),
@@ -887,6 +979,15 @@ fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Alt+Enter", "new line"),
             ("Esc", "cancel research"),
         ],
+        Screen::Review if gap_review(app) => vec![
+            ("↑/↓", "select angle"),
+            ("e", "edit"),
+            ("a", "add"),
+            ("d", "delete"),
+            ("Enter", "launch the follow-up round"),
+            ("s", "skip it and write the report"),
+            ("Esc", "home"),
+        ],
         Screen::Review => vec![
             ("↑/↓", "select angle"),
             ("e", "edit"),
@@ -915,6 +1016,7 @@ fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
             ("s", "save"),
             ("Enter/o", "open source (Sources tab)"),
             ("c", "copy source URL (Sources tab)"),
+            ("v", "citation check (Sources tab)"),
             ("a", "chat about the final report"),
             ("Esc", "back"),
         ],
@@ -1094,9 +1196,15 @@ fn draw_agent_list(f: &mut Frame, app: &App, rv: &RunView, list: Rect, compact: 
         let cost = usage_by_agent.get(i).cloned().unwrap_or_default();
         let selected = i == app.run_sel;
         let title_style = if selected { sel_style() } else { Style::new() };
+        let (fu_mark, fu_w) = if a.followup { (Span::styled(" +", muted()), 2) } else { (Span::raw(""), 0) };
         let line = if compact {
-            let ctw = (list.width as usize).saturating_sub(2 + cost.width() + 1);
-            Line::from(vec![agent_icon(a, app.tick), Span::raw(" "), Span::styled(pad(&a.title, ctw), title_style)])
+            let ctw = (list.width as usize).saturating_sub(2 + cost.width() + 1 + fu_w);
+            Line::from(vec![
+                agent_icon(a, app.tick),
+                fu_mark.clone(),
+                Span::raw(" "),
+                Span::styled(pad(&a.title, ctw), title_style),
+            ])
         } else {
             let act = if a.status == AgentStatus::Failed {
                 a.error.clone().unwrap_or_default()
@@ -1107,8 +1215,9 @@ fn draw_agent_list(f: &mut Frame, app: &App, rv: &RunView, list: Rect, compact: 
             let room = (list.width as usize).saturating_sub(fixed + cost.width() + 2);
             Line::from(vec![
                 agent_icon(a, app.tick),
+                fu_mark,
                 Span::raw(" "),
-                Span::styled(pad(&a.title, tw), title_style),
+                Span::styled(pad(&a.title, tw.saturating_sub(fu_w)), title_style),
                 Span::raw(" "),
                 Span::styled(pad(&model_tag, mw), muted()),
                 Span::raw("  "),
@@ -1128,11 +1237,17 @@ fn stage_line(rv: &RunView) -> Line<'static> {
     if rv.status == RunStatus::Clarifying || rv.clarify_rounds > 0 {
         names.push("Questions");
     }
-    names.extend(["Review", "Research", "Synthesize"]);
+    names.extend(["Review", "Research"]);
+    if rv.gap_round {
+        names.push("Gaps");
+    }
+    names.push("Synthesize");
     let current = match rv.status {
         RunStatus::Planning => Some(if rv.clarify_rounds > 0 { "Questions" } else { "Plan" }),
         RunStatus::Clarifying => Some("Questions"),
         RunStatus::Review => Some("Review"),
+        RunStatus::GapReview => Some("Gaps"),
+        RunStatus::Researching if rv.followup => Some("Gaps"),
         RunStatus::Researching => Some("Research"),
         RunStatus::Synthesizing => Some("Synthesize"),
         RunStatus::Done => None,
@@ -1140,6 +1255,8 @@ fn stage_line(rv: &RunView) -> Line<'static> {
             "Plan"
         } else if rv.synth_started {
             "Synthesize"
+        } else if rv.followup {
+            "Gaps"
         } else {
             "Research"
         }),

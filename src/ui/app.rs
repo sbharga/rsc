@@ -15,7 +15,7 @@ use crate::auth::{self, Account, AuthError, AuthHandle, SignInUi, USAGE_URL};
 use crate::config::{Config, StageModel, resolve_model};
 use crate::pricing::Pricing;
 use crate::research::chat::Chat;
-use crate::research::store::{ChatRole, Record, RunStatus, Source};
+use crate::research::store::{ChatRole, Record, RunStatus, Source, Support};
 use crate::research::{self, Ctx, Run, RunEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
@@ -216,11 +216,14 @@ pub enum Row {
     Model(Stage),
     Num(Num),
     FetchUrl,
+    CheckLinks,
+    VerifyCitations,
+    GapRound,
     CheckUpdates,
     ReportStyle,
 }
 
-pub const ROWS: [Row; 12] = [
+pub const ROWS: [Row; 15] = [
     Row::Account,
     Row::Usage,
     Row::Model(Stage::Planner),
@@ -232,6 +235,9 @@ pub const ROWS: [Row; 12] = [
     Row::Num(Num::ReportWords),
     Row::ReportStyle,
     Row::FetchUrl,
+    Row::CheckLinks,
+    Row::VerifyCitations,
+    Row::GapRound,
     Row::CheckUpdates,
 ];
 
@@ -677,10 +683,12 @@ impl App {
 
     pub fn on_run_event(&mut self, ev: RunEvent) {
         match ev {
-            RunEvent::PlanReady => {
+            RunEvent::PlanReady | RunEvent::GapsReady => {
                 self.review_sel = 0;
                 if self.screen == Screen::Run {
                     self.screen = Screen::Review;
+                } else if matches!(ev, RunEvent::GapsReady) {
+                    self.toast("Follow-up round proposed — Ctrl+G");
                 } else {
                     self.toast("Plan ready — Ctrl+G");
                 }
@@ -772,7 +780,7 @@ impl App {
             return;
         };
         match run.status() {
-            RunStatus::Review => {
+            RunStatus::Review | RunStatus::GapReview => {
                 self.review_sel = 0;
                 self.screen = Screen::Review;
             }
@@ -802,7 +810,7 @@ impl App {
         self.review_sel = 0;
         self.inspect = Inspect::default();
         match status {
-            RunStatus::Review => self.screen = Screen::Review,
+            RunStatus::Review | RunStatus::GapReview => self.screen = Screen::Review,
             RunStatus::Clarifying => self.open_clarify(),
             _ => self.screen = Screen::Run,
         }

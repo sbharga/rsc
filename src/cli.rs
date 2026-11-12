@@ -7,8 +7,8 @@ use crate::auth::{self, Account, AuthHandle};
 use crate::config::{self, Config, MAX_AGENTS};
 use crate::paths;
 use crate::pricing::Pricing;
-use crate::research::store::{self, AgentStatus, RunStatus};
-use crate::research::{Ctx, Run, RunEvent};
+use crate::research::store::{self, AgentStatus, LinkStatus, RunStatus, Support};
+use crate::research::{Ctx, Run, RunEvent, plan};
 use crate::ui::fmt;
 use anyhow::{Context, bail};
 use serde_json::{Value, json};
@@ -21,7 +21,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 pub const USAGE: &str = "usage: rsc [--version | update]
-       rsc run \"<question>\" [--agents N] [--yes] [--no-clarify] [-o FILE] [--json]
+       rsc run \"<question>\" [--agents N|auto] [--verify] [--yes] [--no-clarify] [-o FILE] [--json]
        rsc resume <id> [--yes] [--no-clarify] [-o FILE] [--json]
        rsc ls
        rsc show <id>";
@@ -32,7 +32,9 @@ const NEED_YES: &str = "Pass --yes to accept the plan when not running in a term
 struct Opts {
     /// Question for `run`, id for `resume` and `show`; empty for `ls`.
     target: String,
+    /// `Some(0)` = `--agents auto`.
     agents: Option<u8>,
+    verify: bool,
     yes: bool,
     no_clarify: bool,
     output: Option<PathBuf>,
@@ -47,10 +49,15 @@ fn parse_opts(cmd: &str, args: &[String]) -> anyhow::Result<Opts> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--agents" if cmd == "run" => {
-                let v = it.next().and_then(|v| v.parse::<u8>().ok()).filter(|n| (1..=MAX_AGENTS).contains(n));
-                o.agents = Some(v.with_context(|| format!("--agents must be 1–{MAX_AGENTS}."))?);
+                let v = match it.next().map(String::as_str) {
+                    Some("auto") => Some(0),
+                    v => v.and_then(|v| v.parse::<u8>().ok()).filter(|n| (1..=MAX_AGENTS).contains(n)),
+                };
+                o.agents = Some(v.with_context(|| format!("--agents must be 1–{MAX_AGENTS} or auto."))?);
             }
             "--agents" if cmd == "resume" => bail!("--agents only applies to rsc run."),
+            "--verify" if cmd == "run" => o.verify = true,
+            "--verify" if cmd == "resume" => bail!("--verify only applies to rsc run."),
             "--yes" | "-y" if runs => o.yes = true,
             "--no-clarify" if runs => o.no_clarify = true,
             "--json" if runs => o.json = true,
@@ -151,13 +158,14 @@ async fn run(opts: Opts) -> anyhow::Result<i32> {
     }
     let slugs: Vec<String> = models.into_iter().map(|m| m.slug).collect();
     let stage = |m: &config::StageModel| config::resolve_model(m, &slugs);
-    let rc = s.cfg.run_config(
+    let mut rc = s.cfg.run_config(
         stage(&s.cfg.planner),
         stage(&s.cfg.researcher),
         stage(&s.cfg.compactor),
         stage(&s.cfg.synthesizer),
         opts.agents.unwrap_or(s.cfg.default_agents),
     );
+    rc.verify_citations |= opts.verify;
     let sigint = signal(SignalKind::interrupt())?;
     let started = Instant::now();
     let run = Run::start(s.ctx, opts.target.trim().to_string(), rc, s.tty && !opts.no_clarify);
@@ -171,7 +179,8 @@ async fn resume(opts: Opts) -> anyhow::Result<i32> {
         bail!("Research {id} is already done. Use rsc show {id}.");
     }
     let s = setup()?;
-    let needs_plan = matches!(rec.status, RunStatus::Review | RunStatus::Clarifying) || rec.perspectives.is_empty();
+    let needs_plan = matches!(rec.status, RunStatus::Review | RunStatus::GapReview | RunStatus::Clarifying)
+        || rec.perspectives.is_empty();
     if needs_plan && !opts.yes && !s.tty {
         bail!(NEED_YES);
     }
@@ -225,7 +234,8 @@ impl Progress {
         // A late status (synthesizing and on) is printed after the agent lines that led to it.
         let late = matches!(
             status,
-            RunStatus::Synthesizing
+            RunStatus::GapReview
+                | RunStatus::Synthesizing
                 | RunStatus::Done
                 | RunStatus::Failed
                 | RunStatus::Cancelled
@@ -265,13 +275,20 @@ struct Driver<'a> {
 }
 
 impl Driver<'_> {
+    fn print_angles(ps: &[store::Perspective]) {
+        for (i, p) in ps.iter().enumerate() {
+            eprintln!("  {}. {} — {}", i + 1, p.title, p.brief);
+        }
+        for (i, j) in plan::overlaps(ps) {
+            eprintln!("  warning: angles {} and {} look similar", i + 1, j + 1);
+        }
+    }
+
     /// Accept the plan (`--yes` or the user's answer) or cancel the run.
     async fn review(&mut self) {
         let ps = self.run.with(|s| s.record.perspectives.clone());
         eprintln!("Plan ({} angles):", ps.len());
-        for (i, p) in ps.iter().enumerate() {
-            eprintln!("  {}. {} — {}", i + 1, p.title, p.brief);
-        }
+        Self::print_angles(&ps);
         if self.opts.yes {
             self.run.launch();
             return;
@@ -280,6 +297,27 @@ impl Driver<'_> {
         match self.prompter.read(&mut self.sigint).await {
             Line::Text(t) if !matches!(t.trim().to_lowercase().as_str(), "n" | "no") => self.run.launch(),
             _ => self.run.cancel(),
+        }
+    }
+
+    /// Approve or skip the follow-up round the reviewer proposed.
+    async fn gaps(&mut self) {
+        let (ps, notes) = self.run.with(|s| (s.record.gaps.clone(), s.record.gap_notes.clone()));
+        eprintln!("Follow-up round proposed ({} angles):", ps.len());
+        for l in notes.lines() {
+            eprintln!("  {l}");
+        }
+        Self::print_angles(&ps);
+        if self.opts.yes {
+            self.run.approve_gaps();
+            return;
+        }
+        eprint!("Run follow-up round? [Y/n] ");
+        match self.prompter.read(&mut self.sigint).await {
+            Line::Text(t) if matches!(t.trim().to_lowercase().as_str(), "n" | "no") => self.run.skip_gaps(),
+            Line::Text(_) => self.run.approve_gaps(),
+            Line::Eof => self.run.skip_gaps(),
+            Line::Interrupted => self.run.cancel(),
         }
     }
 
@@ -322,6 +360,7 @@ async fn drive(
     match run.status() {
         RunStatus::Review => d.review().await,
         RunStatus::Clarifying => d.clarify().await,
+        RunStatus::GapReview => d.gaps().await,
         _ => {}
     }
     let mut tick = tokio::time::interval(Duration::from_millis(250));
@@ -336,6 +375,7 @@ async fn drive(
             }
             ev = rx.recv() => match ev {
                 Some(RunEvent::PlanReady) => d.review().await,
+                Some(RunEvent::GapsReady) => d.gaps().await,
                 Some(RunEvent::Questions) => d.clarify().await,
                 Some(RunEvent::Done | RunEvent::Failed(_)) | None => break,
                 Some(RunEvent::Toast(t)) => eprintln!("rsc: {t}"),
@@ -391,6 +431,9 @@ fn finish(run: &Run, opts: &Opts, started: Instant) -> i32 {
                 })
             })
             .collect();
+        let cited = || rec.sources.iter().filter(|s| s.in_final);
+        let links = |st: LinkStatus| cited().filter(|s| s.status == st).count();
+        let verdicts = |v: Support| rec.sources.iter().flat_map(|s| &s.verdicts).filter(|d| d.verdict == v).count();
         let out = json!({
             "id": rec.id,
             "question": rec.question,
@@ -404,6 +447,26 @@ fn finish(run: &Run, opts: &Opts, started: Instant) -> i32 {
             "report_path": report.as_ref().map(|_| rec.dir().join("report.md").display().to_string()),
             "output": opts.output.as_ref().map(|p| p.display().to_string()),
             "report_chars": report.as_ref().map(|r| r.chars().count()),
+            "report_words": report.as_ref().map(|r| r.split_whitespace().count()),
+            "agents_failed": rec.agents.iter().filter(|a| a.status == AgentStatus::Failed).count(),
+            "gap_agents": rec.agents.iter().filter(|a| a.followup).count(),
+            "config": rec.config,
+            "citations": {
+                "cited_sources": cited().count(),
+                "invalid_numbers": rec.synthesis.invalid_citations.len(),
+                "links": {
+                    "live": links(LinkStatus::Live),
+                    "dead": links(LinkStatus::Dead),
+                    "unknown": links(LinkStatus::Unknown),
+                    "unchecked": links(LinkStatus::Unchecked),
+                },
+                "model_supplied": cited().filter(|s| s.model_supplied).count(),
+                "verdicts": {
+                    "supported": verdicts(Support::Supported),
+                    "partial": verdicts(Support::Partial),
+                    "unsupported": verdicts(Support::Unsupported),
+                },
+            },
             "sources": {"total": rec.sources.len(), "cited": rec.sources.iter().filter(|s| s.in_final).count()},
             "agents": agents,
             "error": rec.error,
@@ -425,14 +488,17 @@ mod tests {
 
     #[test]
     fn run_with_all_flags() {
-        let o =
-            parse_opts("run", &args(&["What is X?", "--agents", "3", "-y", "--no-clarify", "-o", "out.md", "--json"]))
-                .unwrap();
+        let o = parse_opts(
+            "run",
+            &args(&["What is X?", "--agents", "3", "--verify", "-y", "--no-clarify", "-o", "out.md", "--json"]),
+        )
+        .unwrap();
         assert_eq!(
             o,
             Opts {
                 target: "What is X?".into(),
                 agents: Some(3),
+                verify: true,
                 yes: true,
                 no_clarify: true,
                 output: Some("out.md".into()),
@@ -445,8 +511,9 @@ mod tests {
     fn agents_out_of_range_rejected() {
         for bad in ["0", "100", "x"] {
             let e = parse_opts("run", &args(&["q", "--agents", bad])).unwrap_err();
-            assert_eq!(e.to_string(), "--agents must be 1–99.");
+            assert_eq!(e.to_string(), "--agents must be 1–99 or auto.");
         }
+        assert_eq!(parse_opts("run", &args(&["q", "--agents", "auto"])).unwrap().agents, Some(0));
         assert!(parse_opts("run", &args(&["q", "--agents"])).is_err());
     }
 
@@ -454,6 +521,12 @@ mod tests {
     fn agents_rejected_on_resume() {
         let e = parse_opts("resume", &args(&["id", "--agents", "2"])).unwrap_err();
         assert_eq!(e.to_string(), "--agents only applies to rsc run.");
+    }
+
+    #[test]
+    fn verify_rejected_on_resume() {
+        let e = parse_opts("resume", &args(&["id", "--verify"])).unwrap_err();
+        assert_eq!(e.to_string(), "--verify only applies to rsc run.");
     }
 
     #[test]

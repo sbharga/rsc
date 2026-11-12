@@ -204,22 +204,7 @@ impl Run {
             ));
             return;
         }
-        self.set_status(RunStatus::Synthesizing);
-        match self.synthesize().await {
-            Ok(text) => {
-                let rec = self.with(|s| {
-                    s.final_report = Some(text.clone());
-                    s.record.status = RunStatus::Done;
-                    s.record.clone()
-                });
-                if let Err(e) = rec.write_final(&text) {
-                    self.notify(RunEvent::Toast(format!("Couldn't save report: {e}")));
-                }
-                self.persist();
-                self.notify(RunEvent::Done);
-            }
-            Err(e) => self.fail(e),
-        }
+        self.after_round().await;
     }
 
     async fn run_agent(self: &Arc<Self>, idx: usize) -> Result<String, ApiError> {
@@ -273,13 +258,9 @@ impl Run {
                 .then(|| vec![json!({"type":"compaction","compact_threshold":cfg.compact_threshold_tokens})]);
             self.set_activity(idx, "thinking");
             let done = self.agent_call(&mut req, Some(&tx)).await?;
-            let found = [
-                sources::annotations(&done.output),
-                sources::links(&output_text(&done.output)),
-                sources::opened(&done.output),
-            ]
-            .concat();
-            self.add_sources(Some(idx), found);
+            let grounded = [sources::annotations(&done.output), sources::opened(&done.output)].concat();
+            self.add_sources(Some(idx), grounded, true);
+            self.add_sources(Some(idx), sources::links(&output_text(&done.output)), false);
             turns += 1;
             self.with(|s| s.record.agents[idx].turns = turns);
             self.add_usage(Scope::Agent(idx), done.usage);

@@ -28,7 +28,7 @@ impl App {
             },
             Modal::Detail(lines) => match k.code {
                 KeyCode::Esc | KeyCode::Enter => Modal::None,
-                KeyCode::Char('r') => {
+                KeyCode::Char('r') if self.screen == Screen::History => {
                     if let Some(rec) = self.selected_history()
                         && rec.status.is_resumable()
                     {
@@ -112,11 +112,11 @@ impl App {
                     return Modal::Angle(a);
                 }
                 if let Some(run) = &self.run {
-                    let mut ps = run.with(|s| s.record.perspectives.clone());
+                    let mut ps = run.review_angles();
                     if let Some(sel) = upsert_angle(&mut ps, a.idx, Perspective { title, brief }) {
                         self.review_sel = sel;
                     }
-                    run.set_perspectives(ps);
+                    run.set_review_angles(ps);
                 }
                 return Modal::None;
             }

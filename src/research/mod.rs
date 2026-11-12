@@ -2,11 +2,13 @@
 
 mod agent;
 pub mod chat;
-mod plan;
+mod gaps;
+pub mod plan;
 pub mod sources;
 pub mod store;
 mod synth;
 pub mod tools;
+mod verify;
 
 use crate::api::{ApiError, Client, Completed, ErrKind, ResponseRequest, StreamDelta};
 use crate::pricing::{Pricing, Usage};
@@ -21,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug)]
 pub enum RunEvent {
     PlanReady,
+    GapsReady,
     Done,
     Failed(ApiError),
     Toast(String),
@@ -103,6 +106,7 @@ enum Scope {
     Compaction,
     Agent(usize),
     Synth,
+    Verify,
 }
 
 #[derive(Clone, Copy)]
@@ -206,6 +210,15 @@ impl Run {
         let run = Run::new(ctx, record);
         match status {
             RunStatus::Review | RunStatus::Clarifying => {}
+            RunStatus::GapReview => {
+                run.with(|s| {
+                    for i in 0..s.record.agents.len() {
+                        if s.record.agents[i].status == AgentStatus::Done {
+                            s.reports[i] = mem.get(i).cloned().flatten().or_else(|| s.record.read_agent_report(i));
+                        }
+                    }
+                });
+            }
             RunStatus::Done => {
                 let (rep, reports) = run.with(|s| {
                     (
@@ -284,8 +297,8 @@ impl Run {
         self.persist();
     }
 
-    fn add_sources(&self, agent: Option<usize>, found: Vec<(String, String)>) {
-        self.with(|s| sources::merge(&mut s.record.sources, found, agent));
+    fn add_sources(&self, agent: Option<usize>, found: Vec<(String, String)>, grounded: bool) {
+        self.with(|s| sources::merge(&mut s.record.sources, found, agent, grounded));
     }
 
     fn add_usage(&self, scope: Scope, u: Usage) {
@@ -294,6 +307,7 @@ impl Run {
             Scope::Compaction => s.record.compaction_usage += u,
             Scope::Agent(i) => s.record.agents[i].usage += u,
             Scope::Synth => s.record.synthesis.usage += u,
+            Scope::Verify => s.record.verify_usage += u,
         });
         self.persist();
         let hit = self.with(|s| {
@@ -316,14 +330,27 @@ impl Run {
         });
     }
 
-    pub fn set_perspectives(&self, ps: Vec<Perspective>) {
-        self.with(|s| s.record.perspectives = ps);
+    /// The angles the review screen edits: the proposed follow-ups during gap review, else the plan.
+    pub fn review_angles(&self) -> Vec<Perspective> {
+        self.with(|s| {
+            if s.record.status == RunStatus::GapReview { s.record.gaps.clone() } else { s.record.perspectives.clone() }
+        })
+    }
+
+    pub fn set_review_angles(&self, ps: Vec<Perspective>) {
+        self.with(|s| {
+            if s.record.status == RunStatus::GapReview {
+                s.record.gaps = ps;
+            } else {
+                s.record.perspectives = ps;
+            }
+        });
         self.persist();
     }
 
     pub fn cancel(&self) {
         let st = self.status();
-        if !st.is_live() && !matches!(st, RunStatus::Review | RunStatus::Clarifying) {
+        if !st.is_live() && !matches!(st, RunStatus::Review | RunStatus::GapReview | RunStatus::Clarifying) {
             return;
         }
         self.with(|s| {
@@ -373,6 +400,7 @@ impl Run {
                     usage: Usage::default(),
                     cost_usd: None,
                     turns: 0,
+                    followup: false,
                 })
                 .collect();
             s.activity = vec![String::new(); ps.len()];
