@@ -113,9 +113,7 @@ impl Run {
 
     /// Claim one of the run's restarts.
     fn take_restart(&self) -> bool {
-        self.restarts
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n < MAX_RUN_RESTARTS).then_some(n + 1))
-            .is_ok()
+        self.restarts.fetch_add(1, Ordering::Relaxed) < MAX_RUN_RESTARTS
     }
 
     pub(super) async fn drive(self: Arc<Self>, run_agents: Vec<usize>) {
