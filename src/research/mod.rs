@@ -1,5 +1,6 @@
 //! Research orchestration: planner → (review) → parallel researchers → synthesizer.
 
+pub mod chat;
 pub mod sources;
 pub mod store;
 pub mod tools;
@@ -22,6 +23,7 @@ pub enum RunEvent {
     Failed(ApiError),
     Toast(String),
     Questions,
+    ChatFailed { question: String, error: ApiError },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -192,6 +194,24 @@ pub fn task_brief(r: &Record) -> String {
         }
     }
     s
+}
+
+const SYNTH_INSTRUCTIONS: &str = "Several researchers investigated the problem below from different angles. Combine their reports into one final answer in Markdown: integrate findings and resolve or flag conflicts. Cite sources by their number from the Sources list in square brackets, e.g. [3] or [2, 5]. If you use a source that is not on the list, cite it as a Markdown link [title](url). Do not write your own sources or references section; one is added automatically. You may search the web to verify key claims.";
+
+/// Appended to the instructions of the writers the user reads directly (synthesizer, chat).
+fn style_suffix(style: &str) -> String {
+    let s = style.trim();
+    if s.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nThe user gave these instructions for how to write for them. Follow them for tone, audience, depth and format, but keep the citations:\n{s}"
+        )
+    }
+}
+
+fn synth_instructions(style: &str) -> String {
+    format!("{SYNTH_INSTRUCTIONS}{}", style_suffix(style))
 }
 
 #[derive(Debug, PartialEq)]
@@ -975,7 +995,7 @@ Always fill `understanding` with 1–3 sentences stating what the user is asking
         let sm = &cfg.synthesizer;
         let req = ResponseRequest {
             model: sm.model.clone(),
-            instructions: "Several researchers investigated the problem below from different angles. Combine their reports into one final answer in Markdown: integrate findings and resolve or flag conflicts. Cite sources by their number from the Sources list in square brackets, e.g. [3] or [2, 5]. If you use a source that is not on the list, cite it as a Markdown link [title](url). Do not write your own sources or references section; one is added automatically. You may search the web to verify key claims.".into(),
+            instructions: synth_instructions(&cfg.report_style),
             input: vec![user_msg(&input)],
             tools: vec![tools::web_search_tool()],
             effort: Some(sm.effort.clone()),
@@ -1023,6 +1043,13 @@ pub fn slug(question: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synth_instructions_append_style() {
+        assert_eq!(synth_instructions("  "), SYNTH_INSTRUCTIONS);
+        let s = synth_instructions("Explain like I'm 5");
+        assert!(s.starts_with(SYNTH_INSTRUCTIONS) && s.ends_with("Explain like I'm 5"));
+    }
 
     #[test]
     fn slug_basic() {

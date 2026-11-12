@@ -3,10 +3,11 @@ use crate::api::{ApiError, Client, ErrKind, ModelInfo};
 use crate::auth::{self, Account, AuthError, AuthHandle, SignInUi, USAGE_URL};
 use crate::config::{Config, MAX_AGENTS, StageModel, resolve_model};
 use crate::pricing::Pricing;
-use crate::research::store::{self, Perspective, Record, RunConfig, RunStatus, Source};
+use crate::research::chat::Chat;
+use crate::research::store::{self, ChatRole, Perspective, Record, RunConfig, RunStatus, Source};
 use crate::research::{self, Ctx, Run, RunEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType};
 use ratatui_textarea::{TextArea, WrapMode};
@@ -37,6 +38,7 @@ pub enum Screen {
     Viewer,
     History,
     Settings,
+    Chat,
 }
 
 pub enum SignInPhase {
@@ -130,6 +132,10 @@ pub struct NumberEdit {
     pub err: Option<String>,
 }
 
+pub struct StyleEdit {
+    pub ta: TextArea<'static>,
+}
+
 #[derive(Clone)]
 pub enum AcctAction {
     Switch(String),
@@ -148,6 +154,7 @@ pub enum Modal {
     Save(Box<SaveModal>),
     Account(Vec<(String, AcctAction)>, usize),
     Number(Box<NumberEdit>),
+    Style(Box<StyleEdit>),
     Detail(Vec<String>),
     Help,
 }
@@ -180,6 +187,8 @@ pub struct Viewer {
     pub max_scroll: u16,
     pub sources: Vec<Source>,
     pub src_sel: usize,
+    /// Record and final report text; Some only when a Final tab exists.
+    pub chat: Option<(Record, String)>,
 }
 
 pub struct History {
@@ -197,9 +206,10 @@ pub enum Row {
     Num(Num),
     FetchUrl,
     CheckUpdates,
+    ReportStyle,
 }
 
-pub const ROWS: [Row; 11] = [
+pub const ROWS: [Row; 12] = [
     Row::Account,
     Row::Usage,
     Row::Model(Stage::Planner),
@@ -209,6 +219,7 @@ pub const ROWS: [Row; 11] = [
     Row::Num(Num::DefaultAgents),
     Row::Num(Num::MaxParallel),
     Row::Num(Num::ReportWords),
+    Row::ReportStyle,
     Row::FetchUrl,
     Row::CheckUpdates,
 ];
@@ -239,6 +250,7 @@ pub struct App {
     pub clarify: ClarifyForm,
     pub inspect: Inspect,
     pub update: Option<String>,
+    pub chat: Option<ChatView>,
 }
 
 pub struct ClarifyForm {
@@ -254,6 +266,68 @@ pub struct Inspect {
     pub full: bool,
     pub scroll: usize,
     pub view_h: usize,
+}
+
+/// Follow-up chat screen state.
+pub struct ChatView {
+    pub chat: Arc<Chat>,
+    pub input: TextArea<'static>,
+    /// Lines up from the bottom; 0 = follow latest.
+    pub scroll: usize,
+    pub view_h: u16,
+    rendered: Text<'static>,
+    rendered_n: usize,
+}
+
+fn you_block(text: &str, out: &mut Vec<Line<'static>>) {
+    out.push(Line::styled("You", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)));
+    out.extend(text.lines().map(|l| Line::raw(l.to_string())));
+    out.push(Line::raw(""));
+}
+
+impl ChatView {
+    fn new(chat: Arc<Chat>) -> ChatView {
+        let mut input = TextArea::default();
+        input.set_placeholder_text("Ask a follow-up question");
+        input.set_placeholder_style(Style::new().fg(MUTED));
+        input.set_cursor_line_style(Style::default());
+        input.set_wrap_mode(WrapMode::WordOrGlyph);
+        ChatView { chat, input, scroll: 0, view_h: 10, rendered: Text::default(), rendered_n: 0 }
+    }
+
+    /// Conversation so far plus the answer in progress; empty when nothing has been asked.
+    pub fn transcript(&mut self, tick: usize) -> Text<'static> {
+        let (n, pending, stream, msgs) = self.chat.with(|s| {
+            let n = s.log.messages.len();
+            let msgs = (n != self.rendered_n).then(|| s.log.messages.clone());
+            (n, s.pending.clone(), s.stream.clone(), msgs)
+        });
+        if let Some(msgs) = msgs {
+            let mut lines: Vec<Line<'static>> = vec![];
+            for m in msgs {
+                match m.role {
+                    ChatRole::User => you_block(&m.text, &mut lines),
+                    ChatRole::Assistant => {
+                        lines.extend(own_text(tui_markdown::from_str(&m.text)).lines);
+                        lines.push(Line::raw(""));
+                    }
+                }
+            }
+            self.rendered = Text::from(lines);
+            self.rendered_n = n;
+        }
+        let mut text = self.rendered.clone();
+        if let Some(q) = pending {
+            you_block(&q, &mut text.lines);
+            if stream.is_empty() {
+                let s = fmt::SPINNER[tick % fmt::SPINNER.len()];
+                text.lines.push(Line::styled(format!("{s} thinking…"), Style::new().fg(MUTED)));
+            } else {
+                text.lines.extend(stream.lines().map(|l| Line::raw(l.to_string())));
+            }
+        }
+        text
+    }
 }
 
 fn answer_ta() -> TextArea<'static> {
@@ -343,6 +417,7 @@ impl App {
                 max_scroll: 0,
                 sources: vec![],
                 src_sel: 0,
+                chat: None,
             },
             history: History { items: vec![], filter: String::new(), filtering: false, sel: 0 },
             settings_sel: 0,
@@ -352,6 +427,7 @@ impl App {
             clarify: ClarifyForm { key: (String::new(), 0), answers: vec![], focus: 0 },
             inspect: Inspect::default(),
             update: None,
+            chat: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         };
         app.check_update();
@@ -620,6 +696,18 @@ impl App {
                     self.toast("Planner has questions — Ctrl+G");
                 }
             }
+            RunEvent::ChatFailed { question, error } => {
+                if let Some(cv) = &mut self.chat
+                    && cv.input.lines().iter().all(|l| l.is_empty())
+                {
+                    cv.input.insert_str(&question);
+                }
+                if error.kind == ErrKind::UsageLimit {
+                    self.modal = Modal::UsageLimit;
+                } else {
+                    self.toast(format!("Couldn't answer: {}", error.message));
+                }
+            }
         }
     }
 
@@ -664,6 +752,7 @@ impl App {
             max_turns: self.cfg.max_turns,
             compact_threshold_tokens: self.cfg.compact_threshold_tokens,
             synth_input_budget_tokens: self.cfg.synth_input_budget_tokens,
+            report_style: self.cfg.report_style.trim().to_string(),
         };
         self.run = Some(Run::start(ctx, q, rc));
         self.home.input.select_all();
@@ -739,6 +828,7 @@ impl App {
         back: Screen,
         question: String,
         sources: Vec<Source>,
+        chat: Option<(Record, String)>,
     ) {
         if tabs.is_empty() {
             self.toast("Nothing to show yet");
@@ -747,23 +837,26 @@ impl App {
         if !sources.is_empty() {
             tabs.push(Self::sources_tab(&sources));
         }
-        self.viewer = Viewer { tabs, tab, scroll: 0, back, question, view_h: 10, max_scroll: 0, sources, src_sel: 0 };
+        self.viewer =
+            Viewer { tabs, tab, scroll: 0, back, question, view_h: 10, max_scroll: 0, sources, src_sel: 0, chat };
         self.screen = Screen::Viewer;
     }
 
     /// Viewer for the in-memory run; `agent` selects that agent's tab.
     pub fn open_run_viewer(&mut self, agent: Option<usize>, back: Screen) {
         let Some(run) = self.run.clone() else { return };
-        let (q, fin, titles, reports, sources) = run.with(|s| {
+        let (q, fin, titles, reports, sources, rec) = run.with(|s| {
             (
                 s.record.question.clone(),
                 s.final_report.clone(),
                 s.record.agents.iter().map(|a| a.title.clone()).collect::<Vec<_>>(),
                 s.reports.clone(),
                 s.record.sources.clone(),
+                s.record.clone(),
             )
         });
         let mut tabs = vec![];
+        let chat = fin.clone().map(|f| (rec.clone(), f));
         if let Some(f) = fin {
             tabs.push(Self::make_tab("Final".into(), f, None));
         }
@@ -773,7 +866,7 @@ impl App {
             }
         }
         let sel = agent.and_then(|a| tabs.iter().position(|t| t.agent == Some(a))).unwrap_or(0);
-        self.open_viewer(tabs, sel, back, q, sources);
+        self.open_viewer(tabs, sel, back, q, sources, chat);
     }
 
     fn open_record_viewer(&mut self, rec: &Record) {
@@ -786,7 +879,8 @@ impl App {
                 tabs.push(Self::make_tab(a.title.clone(), r, Some(i)));
             }
         }
-        self.open_viewer(tabs, 0, Screen::History, rec.question.clone(), rec.sources.clone());
+        let chat = rec.read_final().map(|f| (rec.clone(), f));
+        self.open_viewer(tabs, 0, Screen::History, rec.question.clone(), rec.sources.clone(), chat);
     }
 
     fn open_save(&mut self) {
@@ -884,6 +978,7 @@ impl App {
             Screen::Viewer => self.key_viewer(k),
             Screen::History => self.key_history(k),
             Screen::Settings => self.key_settings(k),
+            Screen::Chat => self.key_chat(k),
         }
     }
 
@@ -893,7 +988,7 @@ impl App {
             Screen::Run | Screen::Review | Screen::Viewer | Screen::Settings => true,
             Screen::History => !self.history.filtering,
             Screen::Home => self.home.chips,
-            Screen::Clarify | Screen::SignIn => false,
+            Screen::Clarify | Screen::Chat | Screen::SignIn => false,
         }
     }
 
@@ -913,6 +1008,9 @@ impl App {
             Modal::Number(n) => {
                 n.ta.insert_str(s.replace('\n', ""));
             }
+            Modal::Style(m) => {
+                m.ta.insert_str(s);
+            }
             Modal::None if self.screen == Screen::Home && !self.home.chips => {
                 self.home.input.insert_str(s);
             }
@@ -920,6 +1018,11 @@ impl App {
                 let f = self.clarify.focus;
                 if let Some(t) = self.clarify.answers.get_mut(f) {
                     t.insert_str(s);
+                }
+            }
+            Modal::None if self.screen == Screen::Chat => {
+                if let Some(c) = &mut self.chat {
+                    c.input.insert_str(s);
                 }
             }
             _ => {}
@@ -1209,6 +1312,7 @@ impl App {
                 }
             }
             KeyCode::Char('s') => self.open_save(),
+            KeyCode::Char('a') => self.open_chat(),
             KeyCode::Esc => {
                 let back = self.viewer.back;
                 if back == Screen::History {
@@ -1247,6 +1351,55 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Open the follow-up chat for the report in the viewer.
+    fn open_chat(&mut self) {
+        let Some((rec, report)) = self.viewer.chat.clone() else {
+            self.toast("Chat opens once the final report is ready");
+            return;
+        };
+        if self.chat.as_ref().is_some_and(|c| c.chat.id() == rec.id) {
+            self.screen = Screen::Chat;
+            return;
+        }
+        let Some(ctx) = self.ctx() else { return };
+        if let Some(old) = self.chat.take() {
+            old.chat.cancel.cancel();
+        }
+        self.chat = Some(ChatView::new(Chat::open(ctx, rec, report)));
+        self.screen = Screen::Chat;
+    }
+
+    fn key_chat(&mut self, k: KeyEvent) {
+        let Some(cv) = self.chat.as_mut() else {
+            self.screen = Screen::Home;
+            return;
+        };
+        let page = (cv.view_h as usize).saturating_sub(1).max(1);
+        match k.code {
+            _ if newline_key(&k) => cv.input.insert_newline(),
+            KeyCode::Enter => {
+                let q = cv.input.lines().join("\n").trim().to_string();
+                if q.is_empty() {
+                    return;
+                }
+                if cv.chat.busy() {
+                    self.toast("Wait for the current answer");
+                    return;
+                }
+                cv.chat.send(q);
+                cv.input.select_all();
+                cv.input.cut();
+                cv.scroll = 0;
+            }
+            KeyCode::PageUp => cv.scroll = cv.scroll.saturating_add(page),
+            KeyCode::PageDown => cv.scroll = cv.scroll.saturating_sub(page),
+            KeyCode::Esc => self.screen = Screen::Viewer,
+            _ => {
+                cv.input.input(k);
+            }
+        }
     }
 
     fn key_history(&mut self, k: KeyEvent) {
@@ -1368,6 +1521,21 @@ impl App {
                         Modal::Number(Box::new(NumberEdit { which, ta: single_line_ta(&cur.to_string()), err: None }));
                 }
                 Row::Num(_) => {}
+                Row::ReportStyle if k.code == KeyCode::Enter => {
+                    let mut lines: Vec<String> = self.cfg.report_style.lines().map(String::from).collect();
+                    if lines.is_empty() {
+                        lines.push(String::new());
+                    }
+                    let mut ta = TextArea::new(lines);
+                    ta.set_placeholder_text("e.g. Explain like I'm 5; avoid jargon");
+                    ta.set_placeholder_style(Style::new().fg(MUTED));
+                    ta.set_cursor_line_style(Style::default());
+                    ta.set_wrap_mode(WrapMode::WordOrGlyph);
+                    ta.move_cursor(ratatui_textarea::CursorMove::Bottom);
+                    ta.move_cursor(ratatui_textarea::CursorMove::End);
+                    self.modal = Modal::Style(Box::new(StyleEdit { ta }));
+                }
+                Row::ReportStyle => {}
                 Row::FetchUrl => {
                     self.cfg.fetch_url_enabled = !self.cfg.fetch_url_enabled;
                     self.save_cfg();
@@ -1422,6 +1590,7 @@ impl App {
             Modal::Angle(a) => self.angle_key(a, k),
             Modal::Confirm(c) => self.confirm_key(c, k),
             Modal::Save(s) => self.save_key(s, k),
+            Modal::Style(s) => self.style_key(s, k),
             Modal::Number(n) => self.number_key(n, k),
             Modal::Account(items, sel) => self.account_key(items, sel, k),
             Modal::Help => Modal::None,
@@ -1525,6 +1694,11 @@ impl App {
                             if self.run.as_ref().is_some_and(|r| r.with(|s| s.record.id == id)) {
                                 self.run = None;
                             }
+                            if self.chat.as_ref().is_some_and(|c| c.chat.id() == id)
+                                && let Some(c) = self.chat.take()
+                            {
+                                c.chat.cancel.cancel();
+                            }
                             self.history.items.retain(|r| r.id != id);
                             let n = self.history_visible().len();
                             self.history.sel = self.history.sel.min(n.saturating_sub(1));
@@ -1603,6 +1777,22 @@ impl App {
         }
     }
 
+    fn style_key(&mut self, mut s: Box<StyleEdit>, k: KeyEvent) -> Modal {
+        if k.code == KeyCode::Esc {
+            return Modal::None;
+        }
+        if newline_key(&k) {
+            s.ta.insert_newline();
+        } else if k.code == KeyCode::Enter {
+            self.cfg.report_style = s.ta.lines().join("\n").trim().to_string();
+            self.save_cfg();
+            return Modal::None;
+        } else {
+            s.ta.input(k);
+        }
+        Modal::Style(s)
+    }
+
     fn account_key(&mut self, items: Vec<(String, AcctAction)>, mut sel: usize, k: KeyEvent) -> Modal {
         match k.code {
             KeyCode::Esc => return Modal::None,
@@ -1625,6 +1815,9 @@ impl App {
                             if let Some(r) = &self.run {
                                 r.cancel();
                             }
+                            if let Some(c) = self.chat.take() {
+                                c.chat.cancel.cancel();
+                            }
                             if a.has_tokens() && a.plan_usage_enabled {
                                 self.models = Models::Loading;
                                 self.activate(a);
@@ -1638,6 +1831,9 @@ impl App {
                         if let Some(a) = self.account.clone() {
                             if let Some(r) = &self.run {
                                 r.cancel();
+                            }
+                            if let Some(c) = self.chat.take() {
+                                c.chat.cancel.cancel();
                             }
                             let tx = self.msg_tx.clone();
                             let id = a.id();

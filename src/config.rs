@@ -27,6 +27,8 @@ pub struct Config {
     pub max_parallel: u8,
     /// Target report length per researcher; 0 lets the model size each report to the problem.
     pub report_words: u32,
+    /// Extra instructions for how the final report and chat answers are written; empty = none.
+    pub report_style: String,
     pub max_turns: u32,
     pub compact_threshold_tokens: u64,
     pub synth_input_budget_tokens: u64,
@@ -45,6 +47,7 @@ impl Default for Config {
             default_agents: 4,
             max_parallel: 3,
             report_words: 0,
+            report_style: String::new(),
             max_turns: 30,
             compact_threshold_tokens: 200_000,
             synth_input_budget_tokens: 120_000,

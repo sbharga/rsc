@@ -112,12 +112,35 @@ pub struct RunConfig {
     pub max_turns: u32,
     pub compact_threshold_tokens: u64,
     pub synth_input_budget_tokens: u64,
+    #[serde(default)]
+    pub report_style: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Clarification {
     pub question: String,
     pub answer: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ChatMsg {
+    pub role: ChatRole,
+    pub text: String,
+}
+
+/// `research/<id>/chat.json`: follow-up conversation about the final report.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChatLog {
+    pub messages: Vec<ChatMsg>,
+    pub usage: Usage,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -243,6 +266,19 @@ impl Record {
     pub fn read_final(&self) -> Option<String> {
         std::fs::read_to_string(self.dir().join("report.md")).ok()
     }
+
+    /// Follow-up conversation; missing or unreadable file = empty.
+    pub fn read_chat(&self) -> ChatLog {
+        std::fs::read_to_string(self.dir().join("chat.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn write_chat(&self, log: &ChatLog) -> anyhow::Result<()> {
+        paths::create_private_dir(&self.dir())?;
+        paths::atomic_write(&self.dir().join("chat.json"), &serde_json::to_vec_pretty(log)?)
+    }
 }
 
 /// Load all persisted runs, newest first.
@@ -324,6 +360,7 @@ mod tests {
             max_turns: 1,
             compact_threshold_tokens: 1,
             synth_input_budget_tokens: 1,
+            report_style: String::new(),
         };
         let mut r = Record::new("q".into(), cfg);
         r.status = RunStatus::Researching;
@@ -376,5 +413,22 @@ mod tests {
         assert!(r.understanding.is_empty());
         assert_eq!(r.clarify_rounds, 0);
         assert!(r.sources.is_empty());
+    }
+
+    #[test]
+    fn chat_log_loads_partial_json() {
+        let l: ChatLog = serde_json::from_str("{}").unwrap();
+        assert!(l.messages.is_empty());
+        assert_eq!(l.usage.tokens(), 0);
+        let l: ChatLog = serde_json::from_str(r#"{"messages":[{"role":"assistant","text":"x"}]}"#).unwrap();
+        assert_eq!(l.messages, vec![ChatMsg { role: ChatRole::Assistant, text: "x".into() }]);
+    }
+
+    #[test]
+    fn run_config_without_report_style_loads() {
+        let mut v = serde_json::to_value(rec(&[])).unwrap();
+        v["config"].as_object_mut().unwrap().remove("report_style");
+        let r: Record = serde_json::from_value(v).unwrap();
+        assert!(r.config.report_style.is_empty());
     }
 }

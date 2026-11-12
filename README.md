@@ -62,6 +62,10 @@ Global keys:
 | `Ctrl+U` | Manage usage |
 | `Ctrl+C` | Quit |
 
+## Follow-up chat
+
+On a finished research's report (after it completes, or from History with `Ctrl+R`), press `a` to ask follow-up questions. Answers stream in, may use web search, and are saved per research, so reopening it continues the conversation. Chat cost is shown on the chat screen and is not added to the research's total.
+
 ## Data and privacy
 
 Everything lives under `~/.rsc` (directories 0700, files 0600, written atomically):
@@ -75,6 +79,7 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `research/<id>/research.json` | Run record |
 | `research/<id>/agents/<n>.md` | Per-agent reports |
 | `research/<id>/report.md` | Final report |
+| `research/<id>/chat.json` | Follow-up chat |
 
 - API requests are sent with `store: false`. Whether OpenAI may train on your data is set by your ChatGPT account's Data Controls.
 - `fetch_url` is off by default. When enabled, it downloads any http(s) URL the model picks, from your machine. That can include addresses on your local network.
@@ -93,6 +98,7 @@ Everything lives under `~/.rsc` (directories 0700, files 0600, written atomicall
 | `default_agents` | `4` | Clamped to 1–99 |
 | `max_parallel` | `3` | Clamped to 1–99 |
 | `report_words` | `0` | `0` = the researcher sizes each report to the problem; otherwise minimum 100 |
+| `report_style` | `""` | Instructions for how the final report and chat answers are written, e.g. `Explain like I'm 5`. Applies to new runs |
 | `max_turns` | `30` | |
 | `compact_threshold_tokens` | `200000` | |
 | `synth_input_budget_tokens` | `120000` | |

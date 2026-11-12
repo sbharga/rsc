@@ -38,6 +38,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Screen::Viewer => draw_viewer(f, app, body),
         Screen::History => draw_history(f, app, body),
         Screen::Settings => draw_settings(f, app, body),
+        Screen::Chat => draw_chat(f, app, body),
     }
     draw_footer(f, app, foot);
     draw_modal(f, app, area);
@@ -99,6 +100,21 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             ],
             right,
         )
+    } else if app.screen == Screen::Chat
+        && let Some(cv) = &app.chat
+    {
+        let (cost, partial) = cv.chat.cost();
+        let usage = cv.chat.with(|s| s.log.usage);
+        let right = format!("{}{} · {}", fmt::money(cost), if partial { "+" } else { "" }, fmt::tokens(usage.tokens()));
+        let room = w.saturating_sub(4 + right.width() + 4 + 2);
+        (
+            vec![
+                Span::styled(" rsc", accent().add_modifier(Modifier::BOLD)),
+                Span::raw("  "),
+                Span::styled(trunc(&one_line(cv.chat.question()), room), muted()),
+            ],
+            right,
+        )
     } else {
         let mut right = String::new();
         if app.screen == Screen::Home
@@ -139,6 +155,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Screen::Viewer if app.viewer.tabs.get(app.viewer.tab).is_some_and(|t| t.is_sources) => {
             "↑/↓ select · Enter open · c copy · Tab switch · ? help".to_string()
         }
+        Screen::Viewer if app.viewer.chat.is_some() => {
+            "j/k scroll · Tab/1–9 switch · s save · a chat · ? help".to_string()
+        }
         Screen::Viewer => "j/k scroll · Tab/1–9 switch · s save · ? help".to_string(),
         Screen::History => if app.history.filtering {
             "type to filter · Enter keep · Esc clear"
@@ -147,6 +166,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         }
         .to_string(),
         Screen::Settings => "↑/↓ select · Enter edit · ? help".to_string(),
+        Screen::Chat => "Enter send · Alt+Enter new line · PgUp/PgDn scroll · Esc back".to_string(),
     };
     f.render_widget(Paragraph::new(Span::styled(format!(" {hint}"), muted())), area);
 }
@@ -582,6 +602,15 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
             }
             Row::FetchUrl => ("fetch_url tool".into(), on_off(app.cfg.fetch_url_enabled), "sites see your IP"),
             Row::CheckUpdates => ("Check for updates".into(), on_off(app.cfg.check_updates), "on launch, via GitHub"),
+            Row::ReportStyle => (
+                "Report style".into(),
+                if app.cfg.report_style.is_empty() {
+                    "none".into()
+                } else {
+                    trunc(&one_line(&app.cfg.report_style), (area.width as usize).saturating_sub(lw + 2))
+                },
+                "",
+            ),
         };
         let selected = i == app.settings_sel;
         let line = Line::from(vec![
@@ -592,6 +621,31 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
         ]);
         f.render_widget(Paragraph::new(line), Rect::new(area.x, area.y + i as u16, area.width, 1));
     }
+}
+
+fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
+    let [log, _, inp] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1), Constraint::Length(5)]).areas(area);
+    let tick = app.tick;
+    let Some(cv) = app.chat.as_mut() else { return };
+    let text = cv.transcript(tick);
+    if text.lines.is_empty() {
+        let r = centered(log, log.width, 1);
+        f.render_widget(
+            Paragraph::new(Span::styled("Ask a follow-up question about this research.", muted()))
+                .alignment(Alignment::Center),
+            r,
+        );
+    } else {
+        let p = Paragraph::new(text).wrap(Wrap { trim: false });
+        let max = p.line_count(log.width).saturating_sub(log.height as usize);
+        cv.scroll = cv.scroll.min(max);
+        cv.view_h = log.height;
+        f.render_widget(p.scroll(((max - cv.scroll).min(u16::MAX as usize) as u16, 0)), log);
+    }
+    cv.input.set_block(Block::bordered().border_type(BorderType::Rounded).border_style(accent()));
+    cv.input.set_cursor_style(Style::new().add_modifier(Modifier::REVERSED));
+    f.render_widget(&cv.input, inp);
 }
 
 fn on_off(b: bool) -> String {
@@ -687,6 +741,17 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                 f.render_widget(&*ta, rect);
             }
             f.render_widget(Paragraph::new(Span::styled("Tab switch · Enter save · Esc cancel", muted())), hint);
+        }
+        Modal::Style(s) => {
+            let r = centered(area, 70.min(area.width), 10);
+            f.render_widget(Clear, r);
+            f.render_widget(modal_block("Report style"), r);
+            let inner = r.inner(Margin::new(1, 1));
+            let [t, h] = Layout::vertical([Constraint::Length(7), Constraint::Length(1)]).areas(inner);
+            s.ta.set_block(Block::bordered().border_type(BorderType::Rounded).border_style(muted()));
+            s.ta.set_cursor_style(Style::new().add_modifier(Modifier::REVERSED));
+            f.render_widget(&s.ta, t);
+            f.render_widget(Paragraph::new(Span::styled("Enter save · Alt+Enter new line · Esc cancel", muted())), h);
         }
         Modal::Save(s) => {
             let r = centered(area, 80.min(area.width), 6);
@@ -824,6 +889,7 @@ fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
             ("s", "save"),
             ("Enter/o", "open source (Sources tab)"),
             ("c", "copy source URL (Sources tab)"),
+            ("a", "chat about the final report"),
             ("Esc", "back"),
         ],
         Screen::History => vec![
@@ -835,6 +901,9 @@ fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Esc", "home"),
         ],
         Screen::Settings => vec![("↑/↓", "select"), ("Enter/Space", "edit or toggle"), ("Esc", "back")],
+        Screen::Chat => {
+            vec![("Enter", "send"), ("Alt+Enter", "new line"), ("PgUp/PgDn", "scroll"), ("Esc", "back to the report")]
+        }
         Screen::SignIn => vec![],
     }
 }
