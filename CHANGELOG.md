@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- TLS now uses rustls' `ring` provider instead of `aws-lc-rs`. Building from source no longer needs `cmake`; a C compiler is still required.
+- Static Linux builds (`x86_64`/`aarch64-unknown-linux-musl`). `install.sh` installs them and falls back to the glibc build for older releases.
+- Windows (x86_64, ARM64): `.zip` release assets, `install.ps1`, and `rsc update` runs `install.ps1` through PowerShell. Ctrl+C cancels headless runs. Files under `%USERPROFILE%\.rsc` inherit the profile's permissions; rsc sets no ACLs.
+- Release archives are signed with cosign (keyless, GitHub OIDC) as `<asset>.sigstore.json`. `install.sh` and `install.ps1` verify them when `cosign` is on `PATH`.
+- `docs/RELEASING.md` release checklist. The Release workflow can be run by hand as a dry run.
+
 ## 0.2.0
 
 - Export: `rsc export <id> [--format md|html|json|pdf] [-o FILE]`; `e` in the viewer exports the final report, `c` copies the current tab. Markdown gets YAML front matter, HTML is a self-contained page, PDF needs `pandoc` on `PATH`.

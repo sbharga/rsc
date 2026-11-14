@@ -18,7 +18,7 @@ The Run screen shows each agent's live timeline: reasoning summaries, searches, 
 
 ## Requirements
 
-- Linux or macOS on x86_64 or arm64. Windows is unsupported (`src/paths.rs` and `src/auth/mod.rs` use `std::os::unix`).
+- Linux, macOS or Windows 10+ on x86_64 or arm64.
 - A ChatGPT account. rsc uses your ChatGPT plan's usage; manage it at <https://chatgpt.com/settings/usage>.
 
 ## Install
@@ -27,14 +27,28 @@ The Run screen shows each agent's live timeline: reasoning summaries, searches, 
 curl -fsSL https://raw.githubusercontent.com/sbharga/rsc/master/install.sh | sh
 ```
 
-This downloads the newest release binary (pre-releases included) for your OS and architecture, verifies its SHA-256 and installs it to `~/.local/bin`. Set `RSC_INSTALL_DIR=/path` to change the directory and `RSC_VERSION=v0.0.1` to pin a version.
+On Windows, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/sbharga/rsc/master/install.ps1 | iex"
+```
+
+This downloads the newest release binary (pre-releases included) for your OS and architecture, verifies its SHA-256, and also its Sigstore signature when `cosign` is on `PATH`. It installs to `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\rsc`). On Linux it installs the static musl build, which runs on any distro; releases before 0.3.0 fall back to glibc. Set `RSC_INSTALL_DIR=/path` to change the directory and `RSC_VERSION=v0.3.0` to pin a version.
+
+To verify a download by hand (replace the asset name for your platform):
+
+```sh
+cosign verify-blob rsc-x86_64-unknown-linux-musl.tar.gz --bundle rsc-x86_64-unknown-linux-musl.tar.gz.sigstore.json \
+  --certificate-identity https://github.com/sbharga/rsc/.github/workflows/release.yml@refs/tags/v0.3.0 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
 
 ### From source
 
-Requires stable Rust with edition 2024, plus a C toolchain and `cmake` because `aws-lc-sys` is built for rustls.
+Requires stable Rust with edition 2024 and a C compiler for `ring` (rustls' crypto): `cc` on Linux and macOS, the Visual Studio C++ build tools on Windows, plus `clang` for ARM64.
 
 ```sh
-cargo install --git https://github.com/sbharga/rsc --tag v0.0.1
+cargo install --git https://github.com/sbharga/rsc --tag v0.3.0
 ```
 
 Or from a clone:
@@ -45,7 +59,7 @@ cargo build --release   # produces target/release/rsc
 
 ## Updating
 
-On launch rsc checks GitHub releases. When a newer one exists, the home screen shows `rsc X available — run rsc update`. `rsc update` installs the newest release over the current binary by running the install script from that release's tag. Turn the check off with `check_updates = false` or in Settings.
+On launch rsc checks GitHub releases. When a newer one exists, the home screen shows `rsc X available — run rsc update`. `rsc update` installs the newest release over the current binary by running the install script from that release's tag. Turn the check off with `check_updates = false` or in Settings. On Windows, `rsc update` runs `install.ps1` through PowerShell, and the old binary is left as `rsc.exe.old` until the next update.
 
 ## Usage
 
@@ -89,7 +103,7 @@ When a question needs research the report doesn't cover, the answer may end with
 
 ## Data and privacy
 
-Everything lives under `~/.rsc` (directories 0700, files 0600, written atomically):
+Everything lives under `~/.rsc` (`%USERPROFILE%\.rsc` on Windows; directories 0700, files 0600, written atomically). On Windows rsc sets no ACLs; files inherit your profile folder's permissions (by default you, SYSTEM and Administrators):
 
 | Path | Contents |
 |---|---|

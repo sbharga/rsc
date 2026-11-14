@@ -13,7 +13,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt            # config in rustfmt.toml
 ```
 
-CI runs `cargo fmt --check`, clippy and the tests on Ubuntu and macOS. All must pass before committing.
+CI runs `cargo fmt --check`, clippy and the tests on Ubuntu, macOS and Windows. All must pass before committing.
 
 ## Layout
 
@@ -48,7 +48,7 @@ CI runs `cargo fmt --check`, clippy and the tests on Ubuntu and macOS. All must 
 
 - Build every Responses API request through `ResponseRequest::body()` (`src/api/mod.rs`). Bodies always have `store: false` and `stream: true`, and never `max_output_tokens`; the test `request_body_omits_forbidden_fields` covers this. `reasoning.summary` is sent only together with `effort`.
 - Optional API capabilities degrade instead of failing. On a `Fatal` error with status 400 or code `subscription_sharing_unsupported_capability` whose `param` names the feature, turn the feature off for the run and retry. Follow `Run::call` (reasoning summaries) and `Run::agent_call` (context_management, fetch_url namespace) for any new optional request field.
-- Write all files through `paths::atomic_write` (mode 0600) and `paths::create_private_dir` (mode 0700).
+- Write all files through `paths::atomic_write` (mode 0600 on Unix) and `paths::create_private_dir` (mode 0700 on Unix).
 - Every field added to `Record` needs `#[serde(default)]` so older `research.json` files still load; `record_without_planner_fields_loads` is the example. Live timelines (`RunState::planner_log` and `logs`) stay in memory only and are capped at `LOG_CAP` (500).
 - Shared run state is accessed only through `Run::with`. Never hold it across `.await`. The UI reads state every frame; send a `RunEvent` only when the UI must act on something (change screen, toast, modal).
 - Never print to stdout or stderr while the TUI is running, because ratatui owns the terminal. Never log or display tokens.

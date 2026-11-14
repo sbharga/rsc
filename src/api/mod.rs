@@ -30,6 +30,13 @@ pub fn backoff_ms() -> u64 {
     *BACKOFF_MS
 }
 
+/// reqwest client builder with rustls' ring provider installed. Build every HTTP client through this.
+pub fn http_builder() -> reqwest::ClientBuilder {
+    // Err only means a provider is already installed by an earlier call.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    reqwest::Client::builder()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrKind {
     Retryable,
@@ -197,7 +204,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(auth: Arc<AuthHandle>) -> Self {
-        let http = reqwest::Client::builder()
+        let http = http_builder()
             .user_agent(concat!("rsc/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(20))
             .build()

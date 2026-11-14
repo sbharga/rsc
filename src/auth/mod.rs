@@ -284,7 +284,7 @@ async fn verify_id_token(
 
 pub async fn sign_in(existing: Option<&Account>, reconsent: bool, ui: SignInUi) -> Result<Account, AuthError> {
     let http =
-        reqwest::Client::builder().user_agent(concat!("rsc/", env!("CARGO_PKG_VERSION"))).build().map_err(net_err)?;
+        crate::api::http_builder().user_agent(concat!("rsc/", env!("CARGO_PKG_VERSION"))).build().map_err(net_err)?;
     let host = host_id().map_err(|e| AuthError::Fatal(e.to_string()))?;
     paths::ensure_dirs().map_err(|e| AuthError::Fatal(e.to_string()))?;
 
@@ -430,7 +430,7 @@ impl AuthHandle {
     pub fn new(id: String) -> Arc<AuthHandle> {
         Arc::new(AuthHandle {
             id,
-            http: reqwest::Client::builder()
+            http: crate::api::http_builder()
                 .user_agent(concat!("rsc/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .expect("http client"),
@@ -457,8 +457,11 @@ impl AuthHandle {
         let _g = self.lock.lock().await;
         let lock_path = paths::accounts_dir().join(format!("{}.lock", self.id));
         let file = tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
-            use std::os::unix::fs::OpenOptionsExt;
-            let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(lock_path)?;
+            let mut o = std::fs::OpenOptions::new();
+            o.create(true).truncate(false).write(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+            let f = o.open(lock_path)?;
             f.lock()?;
             Ok(f)
         })
@@ -534,7 +537,7 @@ impl AuthHandle {
 /// Revoke the refresh token and null local tokens. Returns whether remote revocation was confirmed.
 pub async fn sign_out(id: &str) -> bool {
     let Ok(mut acct) = Account::load(id) else { return false };
-    let http = reqwest::Client::new();
+    let http = crate::api::http_builder().build().expect("http client");
     let mut confirmed = acct.refresh_token.is_none();
     if let Some(rt) = acct.refresh_token.clone() {
         for (i, delay) in [0u64, 1, 2, 4].iter().enumerate() {

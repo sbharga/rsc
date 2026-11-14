@@ -5,7 +5,7 @@ pub(crate) mod fmt;
 use crate::config::Config;
 use crate::pricing::Pricing;
 use crate::research::store;
-use crossterm::event::{Event, EventStream};
+use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures_util::StreamExt;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
@@ -31,7 +31,8 @@ pub async fn run() -> anyhow::Result<()> {
             terminal.draw(|f| draw::draw(f, &mut app))?;
             tokio::select! {
                 ev = events.next() => match ev {
-                    Some(Ok(Event::Key(k))) => app.on_key(k),
+                    // Windows also reports key releases; act on presses and repeats.
+                    Some(Ok(Event::Key(k))) if k.kind != KeyEventKind::Release => app.on_key(k),
                     Some(Ok(Event::Paste(s))) => app.on_paste(s),
                     Some(Ok(_)) => {}
                     Some(Err(e)) => return Err(e.into()),

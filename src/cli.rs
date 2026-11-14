@@ -19,7 +19,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader, Lines, Stdin};
-use tokio::signal::unix::{Signal, SignalKind, signal};
+#[cfg(unix)]
+use tokio::signal::unix::{Signal as Interrupt, SignalKind, signal};
+#[cfg(windows)]
+use tokio::signal::windows::CtrlC as Interrupt;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 pub const USAGE: &str = "usage: rsc [--version | update]
@@ -28,6 +31,18 @@ pub const USAGE: &str = "usage: rsc [--version | update]
        rsc ls
        rsc show <id>
        rsc export <id> [--format md|html|json|pdf] [-o FILE]";
+
+/// Ctrl+C: SIGINT on Unix, the console Ctrl+C event on Windows.
+#[cfg(unix)]
+fn interrupt() -> std::io::Result<Interrupt> {
+    signal(SignalKind::interrupt())
+}
+
+/// Ctrl+C: SIGINT on Unix, the console Ctrl+C event on Windows.
+#[cfg(windows)]
+fn interrupt() -> std::io::Result<Interrupt> {
+    tokio::signal::windows::ctrl_c()
+}
 
 const NEED_YES: &str = "Pass --yes to accept the plan when not running in a terminal.";
 
@@ -227,7 +242,7 @@ async fn run(opts: Opts) -> anyhow::Result<i32> {
         rc.preset = name;
     }
     rc.verify_citations |= opts.verify;
-    let sigint = signal(SignalKind::interrupt())?;
+    let sigint = interrupt()?;
     let started = Instant::now();
     let run = Run::start(s.ctx, opts.target.trim().to_string(), rc, context, s.tty && !opts.no_clarify);
     Ok(drive(run, s.rx, sigint, &opts, s.tty, started).await)
@@ -245,7 +260,7 @@ async fn resume(opts: Opts) -> anyhow::Result<i32> {
     if needs_plan && !opts.yes && !s.tty {
         bail!(NEED_YES);
     }
-    let sigint = signal(SignalKind::interrupt())?;
+    let sigint = interrupt()?;
     let started = Instant::now();
     let run = Run::resume(s.ctx, rec, vec![]);
     Ok(drive(run, s.rx, sigint, &opts, s.tty, started).await)
@@ -262,7 +277,7 @@ struct Prompter {
 }
 
 impl Prompter {
-    async fn read(&mut self, sigint: &mut Signal) -> Line {
+    async fn read(&mut self, sigint: &mut Interrupt) -> Line {
         let lines = self.lines.get_or_insert_with(|| BufReader::new(tokio::io::stdin()).lines());
         tokio::select! {
             _ = sigint.recv() => Line::Interrupted,
@@ -329,7 +344,7 @@ impl Progress {
 
 struct Driver<'a> {
     run: Arc<Run>,
-    sigint: Signal,
+    sigint: Interrupt,
     prompter: Prompter,
     opts: &'a Opts,
     tty: bool,
@@ -417,7 +432,7 @@ impl Driver<'_> {
 async fn drive(
     run: Arc<Run>,
     mut rx: UnboundedReceiver<RunEvent>,
-    sigint: Signal,
+    sigint: Interrupt,
     opts: &Opts,
     tty: bool,
     started: Instant,

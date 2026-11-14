@@ -1,5 +1,8 @@
 //! Full runs of the real `rsc` binary against a scripted Responses API mock. No network, scratch `HOME`.
 
+// Unix only: Windows' home_dir ignores HOME and the harness signals with kill -INT.
+#![cfg(unix)]
+
 mod support;
 
 use serde_json::{Value, json};

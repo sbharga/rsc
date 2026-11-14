@@ -4,6 +4,10 @@ use std::time::Duration;
 
 const RELEASES_URL: &str = "https://api.github.com/repos/sbharga/rsc/releases?per_page=20";
 const INSTALL_URL_BASE: &str = "https://raw.githubusercontent.com/sbharga/rsc";
+#[cfg(unix)]
+const INSTALLER: &str = "install.sh";
+#[cfg(windows)]
+const INSTALLER: &str = "install.ps1";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Deserialize)]
@@ -15,7 +19,7 @@ struct Release {
 
 /// Tag of the newest published release (pre-releases included) newer than this build.
 pub async fn check() -> anyhow::Result<Option<String>> {
-    let http = reqwest::Client::builder()
+    let http = crate::api::http_builder()
         .user_agent(concat!("rsc/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(10))
         .build()?;
@@ -39,9 +43,8 @@ pub async fn run() -> anyhow::Result<()> {
     let exe = std::env::current_exe().context("Couldn't locate the rsc binary.")?;
     let dir = exe.parent().context("Couldn't locate the rsc binary.")?;
     println!("Updating rsc {VERSION} to {}...", tag.trim_start_matches('v'));
-    let url = format!("{INSTALL_URL_BASE}/{tag}/install.sh");
-    let status = tokio::process::Command::new("sh")
-        .args(["-c", r#"script=$(curl -fsSL "$1") && sh -c "$script""#, "sh", &url])
+    let url = format!("{INSTALL_URL_BASE}/{tag}/{INSTALLER}");
+    let status = installer(&url)
         .env("RSC_VERSION", &tag)
         .env("RSC_INSTALL_DIR", dir)
         .status()
@@ -51,6 +54,27 @@ pub async fn run() -> anyhow::Result<()> {
         anyhow::bail!("Update failed.");
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn installer(url: &str) -> tokio::process::Command {
+    let mut c = tokio::process::Command::new("sh");
+    c.args(["-c", r#"script=$(curl -fsSL "$1") && sh -c "$script""#, "sh", url]);
+    c
+}
+
+#[cfg(windows)]
+fn installer(url: &str) -> tokio::process::Command {
+    let mut c = tokio::process::Command::new("powershell");
+    c.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod $env:RSC_INSTALLER | Invoke-Expression",
+    ])
+    .env("RSC_INSTALLER", url);
+    c
 }
 
 /// Parse `[v]MAJOR.MINOR.PATCH[-pre][+build]` into a comparable triple; suffixes are ignored.

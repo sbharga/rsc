@@ -101,7 +101,7 @@ impl reqwest::dns::Resolve for GuardedResolver {
 }
 
 fn fetch_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
+    crate::api::http_builder()
         .user_agent(concat!("rsc/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .no_proxy()

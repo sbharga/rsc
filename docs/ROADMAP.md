@@ -4,6 +4,8 @@ State at v0.1.0 (pre-release): the pipeline (plan → clarify → review → res
 
 Phase 3 (workflow) is implemented in 0.2.0 (pre-release): export, history search and sort, presets, editable prompts, local context and chat deep-dives.
 
+Phase 4 (distribution) is implemented in 0.3.0 (pre-release): rustls on ring (no cmake), static musl Linux builds, Windows builds with `install.ps1`, and cosign-signed release assets.
+
 This document orders the next work by when it should be done and why. Order follows three rules:
 
 1. **Trust before features.** Fix anything that can leak data or burn the user's plan before adding capability.
@@ -20,7 +22,7 @@ Sizes: **S** ≤ 1 day, **M** 2–5 days, **L** > 1 week. Phases are ordered; it
 | 1 | Foundations | 0.0.4 (done) | Testability, headless mode, resilience | A full run is exercised in `cargo test` against a mock API; `rsc run` works with no TTY |
 | 2 | Report quality | 0.1.0 (pre-release) | Make the output measurably better | Eval suite shows citation validity and coverage improving release over release |
 | 3 | Workflow | 0.2.0 (pre-release) | Export, search, presets, local context | Users can get a report out of rsc and into other tools without copy-paste |
-| 4 | Distribution | 0.3.0 | Windows, packaging, supply chain | Install works without a C toolchain; signed artifacts |
+| 4 | Distribution | 0.3.0 (pre-release) | Windows, packaging, supply chain | Install works without a C toolchain; signed artifacts |
 | 5 | Extensibility | later | Providers, tools, knowledge reuse | Decide after real usage data |
 
 ---
@@ -125,21 +127,26 @@ Carried over:
 
 ---
 
-## Phase 4 — Distribution (0.3.0)
+## Phase 4 — Distribution (0.3.0) — implemented, pre-release
 
-### 4.1 Remove the C toolchain requirement — M
-README requires `cmake` and a C toolchain because `aws-lc-sys` backs rustls. Evaluate switching the rustls crypto provider to `ring` (or using prebuilt `aws-lc` with `fips` off) so `cargo install` works on a plain Rust install. Confirm it still passes the release matrix.
+Shipped in 0.3.0; see `CHANGELOG.md`.
 
-### 4.2 Linux portability — S
-Release binaries are built on `ubuntu-22.04` against glibc. Add static `x86_64`/`aarch64-unknown-linux-musl` builds if the TLS stack permits (depends on 4.1), so older distros work. Extend `install.sh` target detection.
+| Item | What shipped |
+|---|---|
+| 4.1 TLS without cmake | reqwest uses `rustls-no-provider` and rustls' `ring` provider, installed by `api::http_builder()`, which every HTTP client goes through. `Cargo.lock` has no `aws-lc`. `cargo install` still needs a C compiler (`ring` compiles C); the prebuilt install needs nothing. |
+| 4.2 Static Linux | `x86_64`/`aarch64-unknown-linux-musl` release builds (with `musl-tools`). `install.sh` tries musl first and falls back to glibc for older releases. |
+| 4.3 Windows | `x86_64`/`aarch64-pc-windows-msvc` builds, `.zip` assets, `install.ps1`, `cfg(unix)` file modes, Ctrl+C through `tokio::signal::windows`, key releases ignored in the TUI, `rsc update` through PowerShell, CI on `windows-latest`. |
+| 4.4 Supply chain | Every archive is signed with cosign (keyless, GitHub OIDC) as `<asset>.sigstore.json`; the publish job verifies each signature before upload, and both installers verify when `cosign` is on `PATH`. One `publish` job uploads everything, so a failed build publishes nothing. `docs/RELEASING.md` is the checklist; the Release workflow can be run by hand as a dry run. |
 
-### 4.3 Windows — L
-`src/paths.rs` and `src/auth/mod.rs` use `std::os::unix` for file modes. Needed: `cfg(windows)` paths with user-only ACLs (or documented fallback), a different `rsc update` (no `sh`), Windows Terminal verification for crossterm/ratatui, a `.zip` release asset, and CI on `windows-latest`. Defer until demand exists; the permission model is the real work, not compilation.
+Carried over:
 
-### 4.4 Supply chain — S/M
-- Sign release artifacts (cosign keyless via GitHub OIDC) and verify in `install.sh` when `cosign` is present. SHA-256 alone only proves the file matches the release.
-- Homebrew tap and `cargo-binstall` metadata. Do these after tagging a non-pre-release 0.1.
-- Publish a release checklist (`docs/RELEASING.md`): bump `Cargo.toml`, changelog, tag, verify assets.
+- **Homebrew tap and cargo-binstall** deferred until a non-pre-release.
+- **Windows e2e tests don't run.** `dirs::home_dir` ignores `HOME` on Windows, so `tests/e2e.rs` is `cfg(unix)`. An `RSC_HOME`-style override would enable them.
+- **Windows TUI not exercised interactively.** Windows is covered by CI (fmt, clippy, unit tests), release builds, and a smoke of the released `rsc.exe` on Windows ARM64 (`install.ps1`, `--version`, `update`).
+- **Paste on Windows** may arrive as key presses, so a pasted newline acts as Enter [INFERENCE: crossterm reads console input records on Windows].
+- **No explicit Windows ACLs.** Privacy relies on the inherited `%USERPROFILE%` ACLs.
+- **`rsc update` on Windows** is first exercisable once a release newer than 0.3.0 exists.
+- **musl allocator performance** not measured.
 
 ---
 
