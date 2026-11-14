@@ -61,6 +61,12 @@ cargo build --release   # produces target/release/rsc
 
 On launch rsc checks GitHub releases. When a newer one exists, the home screen shows `rsc X available — run rsc update`. `rsc update` installs the newest release over the current binary by running the install script from that release's tag. Turn the check off with `check_updates = false` or in Settings. On Windows, `rsc update` runs `install.ps1` through PowerShell, and the old binary is left as `rsc.exe.old` until the next update.
 
+## Uninstalling
+
+`rsc uninstall` removes the binary and asks whether to also delete `~/.rsc` (sign-in, settings, research history; default keeps it). `--purge` deletes it without asking (after signing out, which revokes the refresh token), `--keep-data` keeps it, and `--yes` skips the confirmation. Without a terminal, `--yes` is required. On Windows the binary is deleted just after rsc exits.
+
+Output is colored when it goes to a terminal; set `NO_COLOR` to turn color off.
+
 ## Usage
 
 Run `rsc`. `rsc --version` prints the version; `rsc update` updates rsc.

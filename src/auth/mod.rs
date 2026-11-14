@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -202,7 +202,8 @@ fn parse_query(q: &str) -> Vec<(String, String)> {
     url::form_urlencoded::parse(q.as_bytes()).map(|(k, v)| (k.into_owned(), v.into_owned())).collect()
 }
 
-async fn wait_callback(listener: &TcpListener, state: &str) -> Result<Vec<(String, String)>, AuthError> {
+/// Waits for the browser's `GET /auth/callback`. The connection is returned unanswered so the caller can show the real outcome.
+async fn wait_callback(listener: &TcpListener) -> Result<(TcpStream, Vec<(String, String)>), AuthError> {
     loop {
         let (mut sock, _) = listener.accept().await.map_err(|e| AuthError::Fatal(e.to_string()))?;
         let mut buf = Vec::new();
@@ -230,24 +231,97 @@ async fn wait_callback(listener: &TcpListener, state: &str) -> Result<Vec<(Strin
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         if method == "GET" && path == "/auth/callback" {
             let params = parse_query(query);
-            let ok = params.iter().any(|(k, v)| k == "code" && !v.is_empty())
-                && params.iter().any(|(k, v)| k == "state" && v == state)
-                && !params.iter().any(|(k, _)| k == "error");
-            let body = if ok { "Signed in — you can close this tab." } else { "Sign-in failed. Return to rsc." };
-            let html = format!(
-                "<!doctype html><meta charset=utf-8><title>rsc</title><body style=\"font-family:sans-serif;text-align:center;margin-top:20vh\"><p>{body}</p>"
-            );
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                html.len(),
-                html
-            );
-            let _ = sock.write_all(resp.as_bytes()).await;
-            let _ = sock.shutdown().await;
-            return Ok(params);
+            return Ok((sock, params));
         }
         let _ = sock.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
     }
+}
+
+async fn respond(sock: &mut TcpStream, html: &str) {
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\nConnection: close\r\n\r\n{}",
+        html.len(),
+        html
+    );
+    let _ = sock.write_all(resp.as_bytes()).await;
+    let _ = sock.shutdown().await;
+}
+
+const PAGE: &str = r#"<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{TITLE}} · rsc</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1a1d21;--muted:#5f6b7a;--border:#e3e6ea;--accent:{{ACCENT}}}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a20;--fg:#e8eaed;--muted:#9aa4b2;--border:#2a2f37}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{width:100%;max-width:420px;padding:40px 32px;text-align:center;background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:0 8px 30px rgba(0,0,0,.06)}
+.icon{width:56px;height:56px;margin:0 auto 20px;display:grid;place-items:center;border-radius:50%;color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent)}
+h1{margin:0 0 8px;font-size:22px}
+p{margin:0;color:var(--muted)}
+.who{margin-top:16px;font-weight:600;color:var(--fg);word-break:break-all}
+.err{margin-top:16px;padding:10px 12px;border-radius:8px;background:color-mix(in srgb,var(--accent) 10%,transparent);color:var(--fg);font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-word}
+.brand{margin-top:28px;color:var(--muted);font:600 13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.04em}
+</style>
+<main>
+<div class="icon">{{ICON}}</div>
+<h1>{{HEADING}}</h1>
+<p>{{DETAIL}}</p>
+{{EXTRA}}
+<div class="brand">rsc</div>
+</main>
+</html>
+"#;
+
+const ICON_CHECK: &str = r#"<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>"#;
+const ICON_CROSS: &str = r#"<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>"#;
+
+/// The page the browser shows after the redirect, reflecting the real sign-in outcome.
+fn callback_page(r: &Result<Account, AuthError>) -> String {
+    use crate::export::esc;
+    let (title, accent, icon, heading, detail, extra) = match r {
+        Ok(a) => {
+            let who =
+                if a.email.is_empty() { String::new() } else { format!(r#"<p class="who">{}</p>"#, esc(&a.email)) };
+            if a.plan_usage_enabled {
+                (
+                    "Signed in",
+                    "#16a34a",
+                    ICON_CHECK,
+                    "You're signed in",
+                    "You can close this tab and return to rsc.",
+                    who,
+                )
+            } else {
+                ("Signed in", "#d97706", ICON_CHECK, "Almost done", "Return to rsc to turn on ChatGPT plan usage.", who)
+            }
+        }
+        Err(AuthError::Declined) => (
+            "Access declined",
+            "#dc2626",
+            ICON_CROSS,
+            "Access not granted",
+            "rsc needs permission to use your ChatGPT plan. Return to rsc to try again.",
+            String::new(),
+        ),
+        Err(e) => (
+            "Sign-in failed",
+            "#dc2626",
+            ICON_CROSS,
+            "Sign-in didn't finish",
+            "Return to rsc to try again.",
+            format!(r#"<p class="err">{}</p>"#, esc(&e.to_string())),
+        ),
+    };
+    PAGE.replace("{{TITLE}}", title)
+        .replace("{{ACCENT}}", accent)
+        .replace("{{ICON}}", icon)
+        .replace("{{HEADING}}", heading)
+        .replace("{{DETAIL}}", detail)
+        .replace("{{EXTRA}}", &extra)
 }
 
 #[derive(Deserialize)]
@@ -333,90 +407,95 @@ pub async fn sign_in(existing: Option<&Account>, reconsent: bool, ui: SignInUi) 
     let _ = ui.url_tx.send(shown.to_string());
     let _ = open::that_detached(full.as_str());
 
-    let cb = tokio::select! {
+    let (mut sock, cb) = tokio::select! {
         _ = ui.cancel.cancelled() => return Err(AuthError::Cancelled),
-        r = tokio::time::timeout(Duration::from_secs(600), wait_callback(&listener, &state)) => match r {
+        r = tokio::time::timeout(Duration::from_secs(600), wait_callback(&listener)) => match r {
             Ok(r) => r?,
             Err(_) => return Err(AuthError::Timeout),
         },
     };
     drop(listener);
-    let get = |k: &str| cb.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let result: Result<Account, AuthError> = async {
+        let get = |k: &str| cb.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
 
-    if get("state").as_deref() != Some(state.as_str()) {
-        return Err(AuthError::Fatal("state mismatch".into()));
-    }
-    if get("error").as_deref() == Some("access_denied") {
-        return Err(AuthError::Declined);
-    }
-    if let Some(e) = get("error") {
-        return Err(AuthError::Fatal(format!("sign-in error: {e}")));
-    }
-    let issued_client = match existing {
-        None => get("client_id").ok_or(AuthError::IncompleteRegistration)?,
-        Some(a) => {
-            if let Some(c) = get("client_id")
-                && c != a.client_id
-            {
-                return Err(AuthError::ClientMismatch);
+        if get("state").as_deref() != Some(state.as_str()) {
+            return Err(AuthError::Fatal("state mismatch".into()));
+        }
+        if get("error").as_deref() == Some("access_denied") {
+            return Err(AuthError::Declined);
+        }
+        if let Some(e) = get("error") {
+            return Err(AuthError::Fatal(format!("sign-in error: {e}")));
+        }
+        let issued_client = match existing {
+            None => get("client_id").ok_or(AuthError::IncompleteRegistration)?,
+            Some(a) => {
+                if let Some(c) = get("client_id")
+                    && c != a.client_id
+                {
+                    return Err(AuthError::ClientMismatch);
+                }
+                a.client_id.clone()
             }
-            a.client_id.clone()
-        }
-    };
-    let code = get("code").ok_or_else(|| AuthError::Fatal("callback had no code".into()))?;
+        };
+        let code = get("code").ok_or_else(|| AuthError::Fatal("callback had no code".into()))?;
 
-    let (status, tok) = post_form(
-        &http,
-        TOKEN_URL,
-        &[
-            ("grant_type", "authorization_code"),
-            ("client_id", &issued_client),
-            ("code", &code),
-            ("code_verifier", &verifier),
-            ("redirect_uri", &redirect),
-            ("resource", RESOURCE),
-        ],
-    )
-    .await?;
-    if status >= 400 {
-        let e = oauth_error(&tok);
-        if e == "invalid_grant" {
-            return Err(AuthError::Retry);
+        let (status, tok) = post_form(
+            &http,
+            TOKEN_URL,
+            &[
+                ("grant_type", "authorization_code"),
+                ("client_id", &issued_client),
+                ("code", &code),
+                ("code_verifier", &verifier),
+                ("redirect_uri", &redirect),
+                ("resource", RESOURCE),
+            ],
+        )
+        .await?;
+        if status >= 400 {
+            let e = oauth_error(&tok);
+            if e == "invalid_grant" {
+                return Err(AuthError::Retry);
+            }
+            return Err(AuthError::Fatal(format!("token exchange failed ({status}) {e}")));
         }
-        return Err(AuthError::Fatal(format!("token exchange failed ({status}) {e}")));
+        let s = |k: &str| tok[k].as_str().map(String::from);
+        let id_token = s("id_token").ok_or_else(|| AuthError::Fatal("no id_token".into()))?;
+        let claims = verify_id_token(&http, &id_token, &issued_client, &nonce).await?;
+        if let Some(a) = existing
+            && !a.subject.is_empty()
+            && a.subject != claims.sub
+        {
+            return Err(AuthError::IdentityMismatch);
+        }
+        let scopes: Vec<String> = tok["scope"].as_str().unwrap_or("").split_whitespace().map(String::from).collect();
+        let acct = Account {
+            email: claims.email.or_else(|| existing.map(|a| a.email.clone())).unwrap_or_default(),
+            issuer: ISSUER.into(),
+            subject: claims.sub,
+            client_id: issued_client,
+            ext_agent_host_id: host,
+            id_token: Some(id_token),
+            access_token: s("access_token"),
+            refresh_token: s("refresh_token"),
+            token_type: s("token_type").unwrap_or_else(|| "Bearer".into()),
+            expires_in: tok["expires_in"].as_u64().unwrap_or(3600),
+            plan_usage_enabled: scopes.iter().any(|x| x == PLAN_SCOPE),
+            scopes,
+            saved_at: chrono::Utc::now().to_rfc3339(),
+            welcomed: existing.is_some_and(|a| a.welcomed),
+        };
+        if acct.access_token.is_none() || acct.refresh_token.is_none() {
+            return Err(AuthError::Fatal("token response incomplete".into()));
+        }
+        acct.save().map_err(|e| AuthError::Fatal(e.to_string()))?;
+        set_active_account(Some(&acct.id())).map_err(|e| AuthError::Fatal(e.to_string()))?;
+        Ok(acct)
     }
-    let s = |k: &str| tok[k].as_str().map(String::from);
-    let id_token = s("id_token").ok_or_else(|| AuthError::Fatal("no id_token".into()))?;
-    let claims = verify_id_token(&http, &id_token, &issued_client, &nonce).await?;
-    if let Some(a) = existing
-        && !a.subject.is_empty()
-        && a.subject != claims.sub
-    {
-        return Err(AuthError::IdentityMismatch);
-    }
-    let scopes: Vec<String> = tok["scope"].as_str().unwrap_or("").split_whitespace().map(String::from).collect();
-    let acct = Account {
-        email: claims.email.or_else(|| existing.map(|a| a.email.clone())).unwrap_or_default(),
-        issuer: ISSUER.into(),
-        subject: claims.sub,
-        client_id: issued_client,
-        ext_agent_host_id: host,
-        id_token: Some(id_token),
-        access_token: s("access_token"),
-        refresh_token: s("refresh_token"),
-        token_type: s("token_type").unwrap_or_else(|| "Bearer".into()),
-        expires_in: tok["expires_in"].as_u64().unwrap_or(3600),
-        plan_usage_enabled: scopes.iter().any(|x| x == PLAN_SCOPE),
-        scopes,
-        saved_at: chrono::Utc::now().to_rfc3339(),
-        welcomed: existing.is_some_and(|a| a.welcomed),
-    };
-    if acct.access_token.is_none() || acct.refresh_token.is_none() {
-        return Err(AuthError::Fatal("token response incomplete".into()));
-    }
-    acct.save().map_err(|e| AuthError::Fatal(e.to_string()))?;
-    set_active_account(Some(&acct.id())).map_err(|e| AuthError::Fatal(e.to_string()))?;
-    Ok(acct)
+    .await;
+    respond(&mut sock, &callback_page(&result)).await;
+    result
 }
 
 /// Shared handle that vends fresh access tokens for one account.
@@ -568,4 +647,24 @@ pub async fn sign_out(id: &str) -> bool {
         let _ = set_active_account(None);
     }
     confirmed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_escapes_email() {
+        let acct = Account { email: "a<b@x.com".into(), plan_usage_enabled: true, ..Default::default() };
+        let html = callback_page(&Ok(acct));
+        assert!(html.contains("You're signed in") && html.contains("a&lt;b@x.com"));
+        assert!(!html.contains("a<b@x.com"));
+    }
+
+    #[test]
+    fn page_escapes_error() {
+        let html = callback_page(&Err(AuthError::Fatal("<script>x</script>".into())));
+        assert!(html.contains("Sign-in didn't finish") && html.contains("&lt;script&gt;"));
+        assert!(!html.contains("<script>"));
+    }
 }

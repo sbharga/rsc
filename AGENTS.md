@@ -43,6 +43,8 @@ CI runs `cargo fmt --check`, clippy and the tests on Ubuntu, macOS and Windows. 
 | `src/config.rs` | `config.toml` |
 | `src/pricing.rs` | `pricing.toml` and cost estimates |
 | `src/paths.rs` | `~/.rsc` layout, `atomic_write`, private directories |
+| `src/term.rs` | Colored CLI output (`Paint`, `note`, `error`, `warn`, `report`); color only on a terminal, off with `NO_COLOR` (no ratatui) |
+| `src/uninstall.rs` | `rsc uninstall`: remove the binary, optionally sign out and delete `~/.rsc` (no ratatui) |
 
 ## Invariants
 

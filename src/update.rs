@@ -1,3 +1,4 @@
+use crate::term;
 use anyhow::Context;
 use serde::Deserialize;
 use std::time::Duration;
@@ -37,12 +38,12 @@ pub async fn check() -> anyhow::Result<Option<String>> {
 /// `rsc update`: install the newest release over the running binary.
 pub async fn run() -> anyhow::Result<()> {
     let Some(tag) = check().await.context("Couldn't check for updates.")? else {
-        println!("rsc {VERSION} is up to date.");
+        println!("rsc {} is up to date.", term::out().bold(VERSION));
         return Ok(());
     };
     let exe = std::env::current_exe().context("Couldn't locate the rsc binary.")?;
     let dir = exe.parent().context("Couldn't locate the rsc binary.")?;
-    println!("Updating rsc {VERSION} to {}...", tag.trim_start_matches('v'));
+    println!("Updating rsc {VERSION} to {}...", term::out().bold(tag.trim_start_matches('v')));
     let url = format!("{INSTALL_URL_BASE}/{tag}/{INSTALLER}");
     let status = installer(&url)
         .env("RSC_VERSION", &tag)

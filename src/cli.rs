@@ -11,6 +11,7 @@ use crate::pricing::Pricing;
 use crate::research::store::{self, AgentStatus, LinkStatus, RunStatus, Support};
 use crate::research::{Ctx, Run, RunEvent, plan};
 use crate::research::{context, prompts};
+use crate::term;
 use crate::ui::fmt;
 use anyhow::{Context, bail};
 use serde_json::{Value, json};
@@ -25,12 +26,64 @@ use tokio::signal::unix::{Signal as Interrupt, SignalKind, signal};
 use tokio::signal::windows::CtrlC as Interrupt;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
-pub const USAGE: &str = "usage: rsc [--version | update]
-       rsc run \"<question>\" [--agents N|auto] [--preset NAME] [--context FILE]... [--verify] [--yes] [--no-clarify] [-o FILE] [--json]
-       rsc resume <id> [--yes] [--no-clarify] [-o FILE] [--json]
-       rsc ls
-       rsc show <id>
-       rsc export <id> [--format md|html|json|pdf] [-o FILE]";
+/// Wrong arguments; `main` prints `usage()` for it.
+#[derive(Debug)]
+pub struct UsageError;
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Invalid arguments.")
+    }
+}
+
+impl std::error::Error for UsageError {}
+
+/// (command, arguments, description)
+const COMMANDS: &[(&str, &str, &str)] = &[
+    ("rsc", "", "Open the app."),
+    ("rsc --version", "", "Print the version."),
+    ("rsc update", "", "Install the newest release."),
+    ("rsc uninstall", "[--purge | --keep-data] [--yes]", "Remove rsc; --purge also deletes ~/.rsc."),
+    (
+        "rsc run",
+        "\"<question>\" [--agents N|auto] [--preset NAME] [--context FILE]... [--verify] [--yes] [--no-clarify] [-o FILE] [--json]",
+        "Research a question without the app.",
+    ),
+    (
+        "rsc resume",
+        "<id> [--yes] [--no-clarify] [-o FILE] [--json]",
+        "Continue a failed, cancelled or interrupted run.",
+    ),
+    ("rsc ls", "", "List research."),
+    ("rsc show", "<id>", "Print a report."),
+    ("rsc export", "<id> [--format md|html|json|pdf] [-o FILE]", "Export a report."),
+];
+
+pub fn usage() -> String {
+    let p = term::err();
+    let mut s = p.bold("Usage:");
+    for (cmd, args, desc) in COMMANDS {
+        s.push_str("\n  ");
+        s.push_str(&p.bold(cmd));
+        if !args.is_empty() {
+            s.push(' ');
+            s.push_str(args);
+        }
+        s.push_str("\n      ");
+        s.push_str(&p.dim(desc));
+    }
+    s
+}
+
+/// Status text colored by outcome: done green, failed red, cancelled/interrupted yellow, in progress cyan.
+fn paint_status(p: term::Paint, s: RunStatus, text: &str) -> String {
+    match s {
+        RunStatus::Done => p.green(text),
+        RunStatus::Failed => p.red(text),
+        RunStatus::Cancelled | RunStatus::Interrupted => p.yellow(text),
+        _ => p.cyan(text),
+    }
+}
 
 /// Ctrl+C: SIGINT on Unix, the console Ctrl+C event on Windows.
 #[cfg(unix)]
@@ -104,7 +157,7 @@ fn parse_opts(cmd: &str, args: &[String]) -> anyhow::Result<Opts> {
     match (cmd, positional.len()) {
         ("ls", 0) => {}
         ("run" | "resume" | "show" | "export", 1) => o.target = positional.remove(0),
-        _ => bail!("{USAGE}"),
+        _ => return Err(UsageError.into()),
     }
     if cmd == "run" && o.target.trim().is_empty() {
         bail!("Question is empty.");
@@ -128,12 +181,14 @@ pub async fn main(args: &[String]) -> anyhow::Result<i32> {
 }
 
 fn ls() -> anyhow::Result<i32> {
+    let p = term::out();
     for r in store::list() {
+        let status = format!("{:<12}", r.status.label());
         println!(
-            "{}  {:<12}  {}  {}",
-            r.id,
-            r.status.label(),
-            fmt::badge(&r),
+            "{}  {}  {}  {}",
+            p.cyan(&r.id),
+            paint_status(p, r.status, &status),
+            p.dim(fmt::badge(&r)),
             fmt::trunc(&fmt::one_line(&r.question), 80)
         );
     }
@@ -166,7 +221,7 @@ async fn export(opts: Opts) -> anyhow::Result<i32> {
         }
     }
     if let Some(path) = &opts.output {
-        eprintln!("rsc: exported to {}", path.display());
+        term::note(format!("exported to {}", term::err().bold(path.display())));
     }
     Ok(0)
 }
@@ -192,7 +247,7 @@ fn setup() -> anyhow::Result<Setup> {
     paths::ensure_dirs()?;
     let (cfg, banner) = Config::load();
     if let Some(b) = banner {
-        eprintln!("rsc: {b}");
+        term::warn(b);
     }
     let pricing = Pricing::load();
     prompts::seed();
@@ -298,6 +353,7 @@ struct Progress {
 
 impl Progress {
     fn print(&mut self, run: &Run) {
+        let p = term::err();
         let (status, agents) = run.with(|s| {
             let a: Vec<_> = s
                 .record
@@ -320,7 +376,7 @@ impl Progress {
         let changed = self.status != Some(status);
         self.status = Some(status);
         if changed && !late {
-            eprintln!("rsc: {}", status.label());
+            term::note(paint_status(p, status, status.label()));
         }
         let n = agents.len();
         for (i, (title, st, err)) in agents.iter().enumerate() {
@@ -329,14 +385,20 @@ impl Progress {
                 continue;
             }
             match st {
-                AgentStatus::Running => eprintln!("rsc: [{}/{n}] started: {title}", i + 1),
-                AgentStatus::Done => eprintln!("rsc: [{}/{n}] done: {title}", i + 1),
-                AgentStatus::Failed => eprintln!("rsc: [{}/{n}] failed: {title}: {err}", i + 1),
+                AgentStatus::Running => {
+                    term::note(format!("{} {}: {title}", p.dim(format!("[{}/{n}]", i + 1)), p.cyan("started")))
+                }
+                AgentStatus::Done => {
+                    term::note(format!("{} {}: {title}", p.dim(format!("[{}/{n}]", i + 1)), p.green("done")))
+                }
+                AgentStatus::Failed => {
+                    term::note(format!("{} {}: {title}: {err}", p.dim(format!("[{}/{n}]", i + 1)), p.red("failed")))
+                }
                 AgentStatus::Pending => {}
             }
         }
         if changed && late {
-            eprintln!("rsc: {}", status.label());
+            term::note(paint_status(p, status, status.label()));
         }
         self.agents = agents.into_iter().map(|a| a.1).collect();
     }
@@ -352,32 +414,34 @@ struct Driver<'a> {
 
 impl Driver<'_> {
     fn print_angles(ps: &[store::Perspective]) {
-        for (i, p) in ps.iter().enumerate() {
-            eprintln!("  {}. {} — {}", i + 1, p.title, p.brief);
+        let p = term::err();
+        for (i, a) in ps.iter().enumerate() {
+            eprintln!("  {} {} — {}", p.dim(format!("{}.", i + 1)), p.bold(&a.title), a.brief);
         }
         for (i, j) in plan::overlaps(ps) {
-            eprintln!("  warning: angles {} and {} look similar", i + 1, j + 1);
+            eprintln!("  {} angles {} and {} look similar", p.yellow(p.bold("warning:")), i + 1, j + 1);
         }
     }
 
     /// Accept the plan (`--yes` or the user's answer) or cancel the run.
     async fn review(&mut self) {
         let ps = self.run.with(|s| s.record.perspectives.clone());
-        eprintln!("Plan ({} angles):", ps.len());
+        let p = term::err();
+        eprintln!("{}", p.bold(format!("Plan ({} angles):", ps.len())));
         let docs = self.run.with(|s| s.record.context.clone());
         if !docs.is_empty() {
             let names: Vec<_> = docs
                 .iter()
                 .map(|d| if d.truncated { format!("{} (truncated)", d.name) } else { d.name.clone() })
                 .collect();
-            eprintln!("Attached files (sent to the model): {}", names.join(", "));
+            eprintln!("{} {}", p.dim("Attached files (sent to the model):"), names.join(", "));
         }
         Self::print_angles(&ps);
         if self.opts.yes {
             self.run.launch();
             return;
         }
-        eprint!("Start research? [Y/n] ");
+        eprint!("{} {} ", p.bold("Start research?"), p.dim("[Y/n]"));
         match self.prompter.read(&mut self.sigint).await {
             Line::Text(t) if !matches!(t.trim().to_lowercase().as_str(), "n" | "no") => self.run.launch(),
             _ => self.run.cancel(),
@@ -387,16 +451,17 @@ impl Driver<'_> {
     /// Approve or skip the follow-up round the reviewer proposed.
     async fn gaps(&mut self) {
         let (ps, notes) = self.run.with(|s| (s.record.gaps.clone(), s.record.gap_notes.clone()));
-        eprintln!("Follow-up round proposed ({} angles):", ps.len());
+        let p = term::err();
+        eprintln!("{}", p.bold(format!("Follow-up round proposed ({} angles):", ps.len())));
         for l in notes.lines() {
-            eprintln!("  {l}");
+            eprintln!("  {}", p.dim(l));
         }
         Self::print_angles(&ps);
         if self.opts.yes {
             self.run.approve_gaps();
             return;
         }
-        eprint!("Run follow-up round? [Y/n] ");
+        eprint!("{} {} ", p.bold("Run follow-up round?"), p.dim("[Y/n]"));
         match self.prompter.read(&mut self.sigint).await {
             Line::Text(t) if matches!(t.trim().to_lowercase().as_str(), "n" | "no") => self.run.skip_gaps(),
             Line::Text(_) => self.run.approve_gaps(),
@@ -411,11 +476,12 @@ impl Driver<'_> {
             return;
         }
         let qs = self.run.with(|s| s.record.questions.clone());
-        eprintln!("The planner has questions (Enter skips):");
+        let p = term::err();
+        eprintln!("{} {}", p.bold("The planner has questions"), p.dim("(Enter skips):"));
         let mut answers = Vec::new();
         for (i, q) in qs.iter().enumerate() {
-            eprintln!("{}. {q}", i + 1);
-            eprint!("> ");
+            eprintln!("{} {}", p.dim(format!("{}.", i + 1)), p.bold(q));
+            eprint!("{} ", p.cyan(">"));
             match self.prompter.read(&mut self.sigint).await {
                 Line::Text(t) => answers.push(t),
                 Line::Eof => answers.push(String::new()),
@@ -437,7 +503,7 @@ async fn drive(
     tty: bool,
     started: Instant,
 ) -> i32 {
-    eprintln!("rsc: research {}", run.with(|s| s.record.id.clone()));
+    term::note(format!("research {}", term::err().cyan(run.with(|s| s.record.id.clone()))));
     let mut d = Driver { run: run.clone(), sigint, prompter: Prompter { lines: None }, opts, tty };
     let mut progress = Progress::default();
     // A resumed run may already be waiting on the user.
@@ -462,7 +528,7 @@ async fn drive(
                 Some(RunEvent::GapsReady) => d.gaps().await,
                 Some(RunEvent::Questions) => d.clarify().await,
                 Some(RunEvent::Done | RunEvent::Failed(_)) | None => break,
-                Some(RunEvent::Toast(t)) => eprintln!("rsc: {t}"),
+                Some(RunEvent::Toast(t)) => term::note(t),
                 Some(RunEvent::ChatFailed { .. }) => {}
             },
             _ = tick.tick() => progress.print(&run),
@@ -485,14 +551,14 @@ fn finish(run: &Run, opts: &Opts, started: Instant) -> i32 {
         && let Some(e) = &rec.error
     {
         let rid = e.request_id.as_ref().map(|r| format!(" (request {r})")).unwrap_or_default();
-        eprintln!("rsc: research failed: {}{rid}", e.message);
+        term::error(format!("research failed: {}{rid}", e.message));
     }
     if let Some(report) = &report {
         if let Some(path) = &opts.output {
             match paths::atomic_write(path, report.as_bytes()) {
-                Ok(()) => eprintln!("rsc: report saved to {}", path.display()),
+                Ok(()) => term::note(format!("report saved to {}", term::err().bold(path.display()))),
                 Err(e) => {
-                    eprintln!("rsc: Couldn't write {}: {e}", path.display());
+                    term::error(format!("Couldn't write {}: {e}", path.display()));
                     code = 1;
                 }
             }
@@ -557,7 +623,13 @@ fn finish(run: &Run, opts: &Opts, started: Instant) -> i32 {
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
     }
-    eprintln!("rsc: {} · {} · {}", rec.status.label(), fmt::badge(&rec), rec.id);
+    let p = term::err();
+    term::note(format!(
+        "{} · {} · {}",
+        paint_status(p, rec.status, rec.status.label()),
+        p.dim(fmt::badge(&rec)),
+        p.cyan(&rec.id)
+    ));
     let _ = std::io::stdout().flush();
     code
 }
@@ -660,7 +732,7 @@ mod tests {
             [("run", vec![]), ("run", vec!["a", "b"]), ("resume", vec![]), ("show", vec!["a", "b"]), ("ls", vec!["a"])]
         {
             let e = parse_opts(cmd, &args(&a)).unwrap_err();
-            assert_eq!(e.to_string(), USAGE, "{cmd} {a:?}");
+            assert!(e.is::<UsageError>(), "{cmd} {a:?}");
         }
         assert!(parse_opts("ls", &[]).is_ok());
     }

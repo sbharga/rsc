@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -243,7 +243,12 @@ impl Env {
     }
 
     pub fn cmd(&self, args: &[&str]) -> tokio::process::Command {
-        let mut c = tokio::process::Command::new(env!("CARGO_BIN_EXE_rsc"));
+        self.cmd_at(Path::new(env!("CARGO_BIN_EXE_rsc")), args)
+    }
+
+    /// Like `cmd`, but runs the binary at `exe`.
+    pub fn cmd_at(&self, exe: &Path, args: &[&str]) -> tokio::process::Command {
+        let mut c = tokio::process::Command::new(exe);
         c.args(args)
             .env_clear()
             .env("HOME", &self.home)

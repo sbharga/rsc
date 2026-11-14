@@ -57,6 +57,7 @@ async fn happy_path_writes_report() {
     let stdout = out(&o);
     assert!(stdout.contains("Final answer [1]."), "{stdout}");
     assert!(stdout.contains("## Sources"), "{stdout}");
+    assert!(!err(&o).contains('\x1b') && !stdout.contains('\x1b'), "piped output must stay plain");
 
     assert_eq!(env.mock.count(&Kind::GroupSynth), 0);
     let (id, rec) = env.record();
@@ -78,6 +79,37 @@ async fn happy_path_writes_report() {
     let show = run(&env, &["show", &id]).await;
     let report = std::fs::read_to_string(dir.join("report.md")).unwrap();
     assert_eq!(out(&show).trim_end(), report.trim_end());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uninstall_removes_binary_and_optionally_data() {
+    let env = Env::new(BASE, |r| normal(r, &["A"])).await;
+    let bin = env.home.join("bin/rsc");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    // Never run uninstall on the cargo-built binary itself.
+    let install = || {
+        std::fs::copy(env!("CARGO_BIN_EXE_rsc"), &bin).unwrap();
+    };
+    let uninstall = |args: &[&str]| finish(env.cmd_at(&bin, args).spawn().unwrap());
+
+    install();
+    let o = uninstall(&["uninstall"]).await;
+    assert_eq!(o.status.code(), Some(1), "{}", err(&o));
+    assert!(err(&o).contains("--yes"), "{}", err(&o));
+    assert!(bin.exists());
+
+    let o = uninstall(&["uninstall", "--keep-data", "--yes"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert!(!bin.exists());
+    assert!(env.home.join(".rsc/config.toml").exists());
+
+    install();
+    // The fake account has a refresh token; revoking it would reach auth.openai.com.
+    std::fs::remove_dir_all(env.home.join(".rsc/accounts")).unwrap();
+    let o = uninstall(&["uninstall", "--purge", "--yes"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert!(!bin.exists());
+    assert!(!env.home.join(".rsc").exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

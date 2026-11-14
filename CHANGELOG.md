@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Colored CLI output: errors print as `error:`, warnings as `warning:`, status, agent progress, prompts and `rsc ls` are colored. Color is off when output isn't a terminal or `NO_COLOR` is set.
+- `rsc uninstall [--purge | --keep-data] [--yes]` removes the binary and, with `--purge` or when you answer yes, signs out and deletes `~/.rsc`.
+- The browser page after Sign in with ChatGPT now shows the actual result (signed in as, declined, or the error) once sign-in completes.
+
 ## 0.3.0
 
 - TLS now uses rustls' `ring` provider instead of `aws-lc-rs`. Building from source no longer needs `cmake`; a C compiler is still required.

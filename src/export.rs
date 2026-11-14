@@ -110,7 +110,7 @@ blockquote{border-left:4px solid #ccc;margin-left:0;padding-left:1rem;color:#555
 @media (prefers-color-scheme:dark){body{background:#161616;color:#ddd}pre,code{background:#262626}\
 th,td{border-color:#444}blockquote{border-color:#444;color:#aaa}.meta{color:#999}a{color:#7ab7ff}}";
 
-fn esc(s: &str) -> String {
+pub fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
