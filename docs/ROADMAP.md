@@ -2,6 +2,8 @@
 
 State at v0.1.0 (pre-release): the pipeline (plan → clarify → review → research → synthesize), live agent timelines, source tracking with `[n]` citations, follow-up chat, resume, history, cost estimates, installer and self-update all work. Phase 0 (safety and trust) shipped in 0.0.3: `fetch_url` is SSRF-guarded, the updater is pinned to the release tag, and runs can be capped by tokens or cost. Phase 1 (foundations) shipped in 0.0.4: headless `rsc run`/`resume`/`ls`/`show`, a mock API with end-to-end tests, agent checkpoints and restarts, and the large files split. Single binary, Linux and macOS, ChatGPT sign-in only. Phase 2 (report quality) is implemented in 0.1.0: eval harness, citation checks, auto agent count with overlap warnings, hierarchical synthesis and an opt-in follow-up round. The live eval baseline and planner-prompt tuning against it are still to do.
 
+Phase 3 (workflow) is implemented in 0.2.0 (pre-release): export, history search and sort, presets, editable prompts, local context and chat deep-dives.
+
 This document orders the next work by when it should be done and why. Order follows three rules:
 
 1. **Trust before features.** Fix anything that can leak data or burn the user's plan before adding capability.
@@ -17,7 +19,7 @@ Sizes: **S** ≤ 1 day, **M** 2–5 days, **L** > 1 week. Phases are ordered; it
 | 0 | Safety and trust | 0.0.3 (done) | Close known holes | `fetch_url` cannot reach private addresses; updater pinned to the release tag; run budget cap works |
 | 1 | Foundations | 0.0.4 (done) | Testability, headless mode, resilience | A full run is exercised in `cargo test` against a mock API; `rsc run` works with no TTY |
 | 2 | Report quality | 0.1.0 (pre-release) | Make the output measurably better | Eval suite shows citation validity and coverage improving release over release |
-| 3 | Workflow | 0.2.0 | Export, search, presets, local context | Users can get a report out of rsc and into other tools without copy-paste |
+| 3 | Workflow | 0.2.0 (pre-release) | Export, search, presets, local context | Users can get a report out of rsc and into other tools without copy-paste |
 | 4 | Distribution | 0.3.0 | Windows, packaging, supply chain | Install works without a C toolchain; signed artifacts |
 | 5 | Extensibility | later | Providers, tools, knowledge reuse | Decide after real usage data |
 
@@ -99,29 +101,27 @@ After the first reports, a reviewer step lists unanswered sub-questions and cont
 
 ---
 
-## Phase 3 — Workflow (0.2.0)
+## Phase 3 — Workflow (0.2.0) — implemented, pre-release
 
-### 3.1 Export — S/M
-- `rsc export <id> [--format md|html|json]`, plus an `e` key in the viewer. Markdown output with front matter (question, date, models, cost, source list). Self-contained HTML with inlined CSS.
-- Clipboard copy of the whole report (the Sources tab already copies URLs, so a clipboard path exists).
-- PDF only through an external tool (`pandoc` if present); not worth a dependency.
+Shipped in 0.2.0; see `CHANGELOG.md`. Built-in prompt text is unchanged (checked byte for byte), so no eval diff is needed.
 
-### 3.2 History that scales — S/M
-- Today `/` filters by question substring only (`App::history` filtering in `ui/app.rs`), and `store::list` reads and parses every `research.json` on every call.
-- Add full-text search across `report.md`, and a cached index (`~/.rsc/index.json`, rebuilt from the directory when stale) once listing becomes measurably slow. Don't build the index first; measure with a few hundred runs.
-- Sort by cost and date; show agent count and status per row.
+| Item | What shipped |
+|---|---|
+| 3.1 Export | `src/export.rs`: Markdown with YAML front matter, self-contained HTML (raw HTML in the report is shown as text, non-http(s)/mailto links are neutralised), JSON, and PDF through `pandoc`. `rsc export <id> [--format] [-o]`; `e` in the viewer opens an export prompt (default `.html`); `c` copies the current tab over OSC 52. |
+| 3.2 History | `/` also matches report text; `s` sorts by date or cost; rows show the agent count. No index: see below. |
+| 3.3 Presets | `[presets.<name>]` in `config.toml` (defaults `quick`, `standard`, `deep`), a Preset chip on Home and `rsc run --preset`. A preset sets agents, effort and the run settings the chips don't show; the record stores the preset name. |
+| 3.4 Editable prompts | `~/.rsc/prompts/{planner,researcher,synthesizer,chat}.md`, seeded on first run. `Record::prompts` holds the text a run started with, so resume and chat use it. The untrusted-data note stays outside the editable researcher prompt. |
+| 3.5 Local context | `rsc run --context FILE` (repeatable) and a Files chip on Home attach up to 4 `.md`, `.txt` or `.pdf` files (30,000 characters each). The text joins the task brief and is cited as `[local: name]`; the Review screen and `rsc run` list the files and say they are sent to the model. |
+| 3.6 Chat deep-dive | A chat answer may end with up to 3 proposed angles. `Ctrl+T` confirms, runs one researcher per angle through the gap-round mechanism and re-synthesizes everything into a new revision. `report.md` is always the latest; the previous one is archived as `report.v<n>.md`. |
 
-### 3.3 Presets — S
-Named profiles in `config.toml`, e.g. `quick` (2 agents, low effort), `standard`, `deep` (more agents, high effort, longer reports). Selectable from the Home option chips and `rsc run --preset`. Replaces tuning four stage models per run.
+Carried over:
 
-### 3.4 Editable prompts — S
-Planner, researcher, synthesizer and chat instructions are `const` strings (e.g. `SYNTH_INSTRUCTIONS`). Seed them into `~/.rsc/prompts/*.md` on first run, as is already done for `pricing.toml`; a missing file falls back to the built-in. Fits `report_style`, which already covers tone but not method. Keep prompts versioned in the record so `resume` uses the prompt the run began with.
-
-### 3.5 Local context — M
-`rsc run --context path` / a Home action to attach local `.md`, `.txt` or PDF files (reuse the `pdf-extract` path in `tools.rs`). Content becomes part of the task brief and is cited as `[local: name]`. This is a privacy-relevant change: show the attached files on the Review screen and state that they are sent to the model.
-
-### 3.6 Chat that can dig deeper — M
-Let a follow-up chat answer say "this needs new research" and, on user confirmation, launch one or more extra agents and fold the result into the report as a new section or a new revision (`report.v2.md`). Reuses `Run::drive`. Depends on 2.5's round mechanism (1.4 is done).
+- **History index not built.** `rsc ls` over 300 generated runs (8 agents and 60 sources each, 20 KB reports) took 0.01 s best of 3 on a release build. Listing is not slow, so `index.json` stays unbuilt; revisit if it passes ~100 ms. The History screen additionally reads every `report.md` when it opens.
+- **PDF export is only checked for the missing-`pandoc` message.** `pandoc` is not installed on the development machine, so a produced PDF was never seen. It needs `pandoc` plus a LaTeX engine on `PATH`.
+- **Deep-dive has no automated test.** It is TUI-only. It was checked in tmux against a scripted mock: proposal shown, `Ctrl+T` then `y`, third agent run, tab `Final v2`, `report.v1.md` archived, `research.json` has `revision: 2`.
+- **OSC 52 clipboard** is limited in size by some terminals and needs `set-clipboard on` in tmux.
+- **Presets set effort, not model slugs.** Slugs differ per account; models stay as configured.
+- **Attached files are snapshotted** in `research.json`; resume does not re-read them.
 
 ---
 

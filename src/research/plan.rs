@@ -17,6 +17,7 @@ fn planner_input(r: &Record) -> String {
             s.push_str(&format!("Q: {}\nA: {}\n", c.question, c.answer));
         }
     }
+    s.push_str(&context::block(&r.context));
     s
 }
 
@@ -71,7 +72,7 @@ fn parse_plan(text: &str, force: bool, max: usize) -> Option<PlanReply> {
 }
 
 /// Planner system prompt. `n` researchers exactly, or `0` = the planner chooses within the auto bounds.
-fn planner_instructions(n: u8, force: bool) -> String {
+fn planner_instructions(template: &str, n: u8, force: bool) -> String {
     let (team, step3) = if n > 0 {
         (
             format!("a team of {n} independent researchers"),
@@ -87,13 +88,7 @@ fn planner_instructions(n: u8, force: bool) -> String {
             ),
         )
     };
-    let mut s = format!(
-        "You plan research for {team}. First make sure you understand exactly what the user wants, then give each researcher a distinct assignment.\n\n\
-1. Do light research: at most 3 quick web searches to learn key terms, the current state of the topic and what matters for scoping. Do not research in depth — the researchers will.\n\
-2. If the request is ambiguous in a way that would change what the researchers should do (scope, audience, timeframe, region, depth, constraints, or the kind of answer wanted), put up to 3 short, specific questions in `questions` and leave `perspectives` empty. Do not ask about anything you can reasonably assume.\n\
-3. Otherwise leave `questions` empty and {step3}\n\n\
-Always fill `understanding` with 1–3 sentences stating what the user is asking for, including any constraints from their answers, and `notes` with the key facts you found (with source URLs) that shaped the plan."
-    );
+    let mut s = prompts::fill(template, &[("team", &team), ("step3", &step3)]);
     if force {
         s.push_str("\n\nDo not ask any more questions: `questions` must be empty and you must return the perspectives now, making reasonable assumptions where needed.");
     }
@@ -218,8 +213,14 @@ impl Run {
     }
 
     async fn plan(self: &Arc<Self>, force: bool) -> Result<PlanOutcome, ApiError> {
-        let (input, n, sm, rounds) = self.with(|s| {
-            (planner_input(&s.record), s.record.config.agents, s.record.config.planner.clone(), s.record.clarify_rounds)
+        let (input, n, sm, rounds, template) = self.with(|s| {
+            (
+                planner_input(&s.record),
+                s.record.config.agents,
+                s.record.config.planner.clone(),
+                s.record.clarify_rounds,
+                s.record.prompts.planner().to_string(),
+            )
         });
         let force = force || rounds >= MAX_CLARIFY_ROUNDS;
         let schema = json!({"type":"json_schema","name":"plan","strict":true,"schema":{
@@ -233,7 +234,7 @@ impl Run {
                     "properties":{"title":{"type":"string"},"brief":{"type":"string"}},
                     "required":["title","brief"],"additionalProperties":false}}},
             "required":["understanding","notes","questions","perspectives"],"additionalProperties":false}});
-        let instructions = planner_instructions(n, force);
+        let instructions = planner_instructions(&template, n, force);
         let max = if n == 0 { AUTO_MAX_AGENTS } else { MAX_AGENTS } as usize;
         let req = ResponseRequest {
             model: sm.model.clone(),
@@ -285,9 +286,9 @@ mod tests {
 
     #[test]
     fn planner_instructions_auto_vs_pinned() {
-        let pinned = planner_instructions(3, false);
+        let pinned = planner_instructions(prompts::PLANNER, 3, false);
         assert!(pinned.contains("exactly 3 `perspectives`"));
-        let auto = planner_instructions(0, true);
+        let auto = planner_instructions(prompts::PLANNER, 0, true);
         assert!(auto.contains("between 2 and 8") && !auto.contains("return exactly"));
         assert!(auto.contains("Do not ask any more questions"));
     }

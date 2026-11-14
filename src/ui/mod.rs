@@ -14,6 +14,7 @@ pub async fn run() -> anyhow::Result<()> {
     crate::paths::ensure_dirs()?;
     let (cfg, cfg_err) = Config::load();
     let pricing = Pricing::load();
+    crate::research::prompts::seed();
     store::mark_interrupted();
 
     let (msg_tx, mut msg_rx) = unbounded_channel();

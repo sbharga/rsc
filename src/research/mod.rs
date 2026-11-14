@@ -2,8 +2,10 @@
 
 mod agent;
 pub mod chat;
+pub mod context;
 mod gaps;
 pub mod plan;
+pub mod prompts;
 pub mod sources;
 pub mod store;
 mod synth;
@@ -15,7 +17,7 @@ use crate::pricing::{Pricing, Usage};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use store::{AgentRec, AgentStatus, ErrRec, Perspective, Record, RunConfig, RunStatus};
+use store::{AgentRec, AgentStatus, ErrRec, LocalDoc, Perspective, Record, RunConfig, RunStatus};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -155,6 +157,13 @@ pub fn task_brief(r: &Record) -> String {
             s.push_str(&format!("- Q: {} A: {}\n", c.question, c.answer));
         }
     }
+    if !r.followups.is_empty() {
+        s.push_str("\n\nFollow-up questions the user asked after reading the report:\n");
+        for q in &r.followups {
+            s.push_str(&format!("- {q}\n"));
+        }
+    }
+    s.push_str(&context::block(&r.context));
     s
 }
 
@@ -197,8 +206,11 @@ impl Run {
 
     /// New run: plans angles, then waits in `review`.
     /// `clarify` = false forces a plan on the first planner call (no questions).
-    pub fn start(ctx: Ctx, question: String, cfg: RunConfig, clarify: bool) -> Arc<Run> {
-        let run = Run::new(ctx, Record::new(question, cfg));
+    pub fn start(ctx: Ctx, question: String, cfg: RunConfig, context: Vec<LocalDoc>, clarify: bool) -> Arc<Run> {
+        let mut record = Record::new(question, cfg);
+        record.context = context;
+        record.prompts = prompts::Prompts::load();
+        let run = Run::new(ctx, record);
         run.persist();
         tokio::spawn(run.clone().plan_task(!clarify));
         run

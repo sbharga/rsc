@@ -395,3 +395,86 @@ async fn cited_loopback_link_is_not_probed() {
     assert_eq!(j["citations"]["links"]["unknown"], 1, "{j}");
     assert_eq!(env.mock.hits(), 1 + env.mock.total());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_formats() {
+    let env = Env::new(BASE, |r| normal(r, &["A", "B"])).await;
+    let o = run(&env, &["run", "q", "--yes"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let (id, _) = env.record();
+
+    let md = out(&run(&env, &["export", &id]).await);
+    assert!(md.starts_with("---\ntitle: \"q\""), "{md}");
+    assert!(md.contains("Final answer [1]."), "{md}");
+
+    let html = out(&run(&env, &["export", &id, "--format", "html"]).await);
+    assert!(html.contains("<!doctype html>") && html.contains("Final answer [1]."), "{html}");
+
+    let path = env.home.join("r.json");
+    let o = run(&env, &["export", &id, "--format", "json", "-o", path.to_str().unwrap()]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let j: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(j["record"]["id"], id.as_str());
+
+    let o = run(&env, &["export", &id, "--format", "pdf"]).await;
+    assert_eq!(o.status.code(), Some(1));
+    assert!(err(&o).contains("PDF export needs -o FILE."), "{}", err(&o));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preset_applies_to_run() {
+    let cfg = format!("{BASE}[presets.tiny]\nagents = 1\neffort = \"low\"\nreport_words = 300\n");
+    let env = Env::new(&cfg, |r| normal(r, &["A"])).await;
+    let o = run(&env, &["run", "q", "--yes", "--preset", "tiny", "--json"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let j: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(j["config"]["agents"], 1);
+    assert_eq!(j["config"]["preset"], "tiny");
+    assert_eq!(j["config"]["report_words"], 300);
+    let planner = &env.mock.bodies(&Kind::Planner)[0];
+    assert_eq!(planner["reasoning"]["effort"], "low");
+
+    let env = Env::new(&cfg, |r| normal(r, &["A"])).await;
+    let o = run(&env, &["run", "q", "--yes", "--preset", "nope"]).await;
+    assert_eq!(o.status.code(), Some(1));
+    assert!(err(&o).contains("Unknown preset nope"), "{}", err(&o));
+    assert_eq!(env.mock.hits(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_file_reaches_planner_and_researchers() {
+    let env = Env::new(BASE, |r| normal(r, &["A", "B"])).await;
+    let notes = env.home.join("notes.md");
+    std::fs::write(&notes, "LOCAL-MARKER").unwrap();
+    let o = run(&env, &["run", "q", "--yes", "--context", notes.to_str().unwrap()]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let planner = &env.mock.bodies(&Kind::Planner)[0];
+    let input = planner["input"].to_string();
+    assert!(input.contains("LOCAL-MARKER") && input.contains("[local: "), "{input}");
+    for t in ["A", "B"] {
+        let first = &env.mock.bodies(&Kind::Researcher(t.into()))[0];
+        assert!(first["input"].to_string().contains("LOCAL-MARKER"), "{t}");
+    }
+    assert_eq!(env.record().1["context"][0]["name"], "notes.md");
+
+    let env = Env::new(BASE, |r| normal(r, &["A", "B"])).await;
+    let docx = env.home.join("x.docx");
+    std::fs::write(&docx, "x").unwrap();
+    let o = run(&env, &["run", "q", "--yes", "--context", docx.to_str().unwrap()]).await;
+    assert_eq!(o.status.code(), Some(1));
+    assert!(err(&o).contains("Unsupported file type"), "{}", err(&o));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn custom_prompt_is_used_and_recorded() {
+    let env = Env::new(BASE, |r| normal(r, &["A", "B"])).await;
+    let dir = env.home.join(".rsc/prompts");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("synthesizer.md"), "Several researchers CUSTOM-SYNTH\n").unwrap();
+    let o = run(&env, &["run", "q", "--yes"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let synth = &env.mock.bodies(&Kind::Synth)[0];
+    assert!(synth["instructions"].as_str().unwrap().starts_with("Several researchers CUSTOM-SYNTH"));
+    assert_eq!(env.record().1["prompts"]["synthesizer"], "Several researchers CUSTOM-SYNTH");
+    assert!(dir.join("planner.md").exists());
+}

@@ -1,6 +1,6 @@
 //! Follow-up chat about a finished report.
 
-use super::store::{ChatLog, ChatMsg, ChatRole, Record};
+use super::store::{ChatLog, ChatMsg, ChatRole, Perspective, Record};
 use super::{Ctx, RunEvent, output_text, style_suffix, task_brief, tools, user_msg};
 use crate::api::{ErrKind, ResponseRequest, StreamDelta};
 use serde_json::{Value, json};
@@ -8,7 +8,32 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-const CHAT_INSTRUCTIONS: &str = "You wrote the research report below for the user. Answer their follow-up questions about it in Markdown. Base answers on the report and its sources; search the web when a question needs information the report does not cover or to check a claim. Cite sources from the report's Sources list by number in square brackets, e.g. [3]; cite any new source as a Markdown link [title](url). Say so when the report and sources do not support an answer.";
+const RESEARCH_NOTE: &str = "\n\nIf answering well needs in-depth new research that the report does not cover and a few searches cannot settle, answer what you can, say that new research would help, and end your answer with 1–3 proposed research angles between a line <research> and a line </research>, one per line as `title | brief`, where the brief says in 1–2 sentences what to find out. The user decides whether to run them. Otherwise never write a <research> block.";
+
+/// Most angles one chat deep-dive may start.
+pub const MAX_CHAT_AGENTS: usize = 3;
+
+/// Split a `<research>` block off the end of an answer: (answer text, proposed angles).
+/// No terminated block means the text is returned unchanged.
+pub fn parse_proposal(text: &str) -> (String, Vec<Perspective>) {
+    const OPEN: &str = "<research>";
+    const CLOSE: &str = "</research>";
+    let Some(start) = text.rfind(OPEN) else { return (text.to_string(), vec![]) };
+    let body = start + OPEN.len();
+    let Some(len) = text[body..].find(CLOSE) else { return (text.to_string(), vec![]) };
+    let angles = text[body..body + len]
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim().trim_start_matches(['-', '*']).trim();
+            let (title, brief) = l.split_once('|').unwrap_or((l, ""));
+            let title = title.trim();
+            (!title.is_empty()).then(|| Perspective { title: title.into(), brief: brief.trim().into() })
+        })
+        .take(MAX_CHAT_AGENTS)
+        .collect();
+    let rest = format!("{}{}", &text[..start], &text[body + len + CLOSE.len()..]);
+    (rest.trim_end().to_string(), angles)
+}
 
 pub struct ChatState {
     pub log: ChatLog,
@@ -41,7 +66,7 @@ fn chat_request(rec: &Record, report: &str, history: &[ChatMsg], question: &str)
     input.push(user_msg(question));
     ResponseRequest {
         model: rec.config.synthesizer.model.clone(),
-        instructions: format!("{CHAT_INSTRUCTIONS}{}", style_suffix(&rec.config.report_style)),
+        instructions: format!("{}{RESEARCH_NOTE}{}", rec.prompts.chat(), style_suffix(&rec.config.report_style)),
         input,
         tools: vec![tools::web_search_tool()],
         effort: Some(rec.config.synthesizer.effort.clone()),
@@ -77,6 +102,15 @@ impl Chat {
 
     pub fn busy(&self) -> bool {
         self.with(|s| s.pending.is_some())
+    }
+
+    /// The question and angles of the last answer if it proposed new research.
+    pub fn proposal(&self) -> Option<(String, Vec<Perspective>)> {
+        self.with(|s| {
+            let [.., q, a] = s.log.messages.as_slice() else { return None };
+            (q.role == ChatRole::User && a.role == ChatRole::Assistant && !a.research.is_empty())
+                .then(|| (q.text.clone(), a.research.clone()))
+        })
     }
 
     /// Chat cost in USD; the flag is true when the model has no known rates (only search is priced).
@@ -122,14 +156,16 @@ impl Chat {
         match r {
             Ok(done) => {
                 let streamed = self.with(|s| s.stream.clone());
-                let mut text = output_text(&done.output);
-                if text.trim().is_empty() {
-                    text = if streamed.trim().is_empty() { "(no answer)".into() } else { streamed };
-                }
+                let (text, research) = parse_proposal(&output_text(&done.output));
+                let text = if text.trim().is_empty() {
+                    if streamed.trim().is_empty() { "(no answer)".into() } else { streamed }
+                } else {
+                    text
+                };
                 let log = self.with(|s| {
                     s.log.usage += done.usage;
-                    s.log.messages.push(ChatMsg { role: ChatRole::User, text: q });
-                    s.log.messages.push(ChatMsg { role: ChatRole::Assistant, text });
+                    s.log.messages.push(ChatMsg { role: ChatRole::User, text: q, research: vec![] });
+                    s.log.messages.push(ChatMsg { role: ChatRole::Assistant, text, research });
                     s.pending = None;
                     s.stream.clear();
                     s.log.clone()
@@ -178,11 +214,12 @@ mod tests {
             check_links: false,
             verify_citations: false,
             gap_round: false,
+            preset: String::new(),
         };
         let rec = Record::new("Q".into(), cfg);
         let hist = [
-            ChatMsg { role: ChatRole::User, text: "a".into() },
-            ChatMsg { role: ChatRole::Assistant, text: "b".into() },
+            ChatMsg { role: ChatRole::User, text: "a".into(), research: vec![] },
+            ChatMsg { role: ChatRole::Assistant, text: "b".into(), research: vec![] },
         ];
         let req = chat_request(&rec, "REPORT", &hist, "c");
         assert_eq!(req.input.len(), 4);
@@ -196,5 +233,32 @@ mod tests {
         assert!(req.instructions.ends_with("No jargon"));
         assert_eq!(req.tools[0]["type"], "web_search");
         assert_eq!(req.body()["store"], false);
+    }
+
+    #[test]
+    fn proposal_block_is_parsed_and_stripped() {
+        let (t, p) =
+            parse_proposal("Answer.\n<research>\n- Recycling | Find 2025 rates.\n* Costs\n | no title\n</research>\n");
+        assert_eq!(t, "Answer.");
+        assert_eq!(
+            p,
+            vec![
+                Perspective { title: "Recycling".into(), brief: "Find 2025 rates.".into() },
+                Perspective { title: "Costs".into(), brief: String::new() },
+            ]
+        );
+    }
+
+    #[test]
+    fn no_or_unterminated_block_leaves_text_alone() {
+        assert_eq!(parse_proposal("plain"), ("plain".to_string(), vec![]));
+        let open = "x\n<research>\nA | b";
+        assert_eq!(parse_proposal(open), (open.to_string(), vec![]));
+    }
+
+    #[test]
+    fn proposal_is_capped() {
+        let (_, p) = parse_proposal("<research>\na|1\nb|2\nc|3\nd|4\n</research>");
+        assert_eq!(p.len(), MAX_CHAT_AGENTS);
     }
 }

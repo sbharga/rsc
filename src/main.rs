@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod cli;
 mod config;
+mod export;
 mod paths;
 mod pricing;
 mod research;
@@ -18,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some("update") => update::run().await,
-        Some("run" | "resume" | "ls" | "show") => {
+        Some("run" | "resume" | "ls" | "show" | "export") => {
             let code = cli::main(&args[1..]).await?;
             std::process::exit(code)
         }

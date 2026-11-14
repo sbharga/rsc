@@ -2784,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "rsc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -2796,6 +2796,7 @@ dependencies = [
  "jsonwebtoken",
  "open",
  "pdf-extract",
+ "pulldown-cmark",
  "rand 0.10.3",
  "ratatui",
  "ratatui-textarea",

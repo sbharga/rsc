@@ -1,6 +1,6 @@
 [package]
 name = "rsc"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Multi-agent deep research in your terminal, powered by your ChatGPT plan"
 license = "MIT OR Apache-2.0"
@@ -21,6 +21,7 @@ html2text = "0.17"
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 open = "5"
 pdf-extract = "0.12"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rand = "0.10"
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 ratatui-textarea = "0.9"

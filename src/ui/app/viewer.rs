@@ -1,5 +1,11 @@
 use super::fmt::osc52_copy;
 use super::*;
+use crate::export;
+
+/// "Final", or "Final v2" once a chat deep-dive has produced a newer revision.
+fn final_label(rec: &Record) -> String {
+    if rec.revision > 1 { format!("Final v{}", rec.revision) } else { "Final".into() }
+}
 
 impl App {
     pub(super) fn make_tab(label: String, text: String, agent: Option<usize>) -> ViewTab {
@@ -54,7 +60,7 @@ impl App {
         let mut tabs = vec![];
         let chat = fin.clone().map(|f| (rec.clone(), f));
         if let Some(f) = fin {
-            tabs.push(Self::make_tab("Final".into(), f, None));
+            tabs.push(Self::make_tab(final_label(&rec), f, None));
         }
         for (i, r) in reports.into_iter().enumerate() {
             if let Some(r) = r {
@@ -68,7 +74,7 @@ impl App {
     pub(super) fn open_record_viewer(&mut self, rec: &Record) {
         let mut tabs = vec![];
         if let Some(f) = rec.read_final() {
-            tabs.push(Self::make_tab("Final".into(), f, None));
+            tabs.push(Self::make_tab(final_label(rec), f, None));
         }
         for (i, a) in rec.agents.iter().enumerate() {
             if let Some(r) = rec.read_agent_report(i) {
@@ -102,6 +108,34 @@ impl App {
         }
     }
 
+    /// Export prompt for the final report; defaults to HTML next to the working directory.
+    pub(super) fn open_export(&mut self) {
+        let Some((rec, report)) = self.viewer.chat.clone() else {
+            self.toast("Export needs a final report");
+            return;
+        };
+        let path = self.cwd.join(format!("{}.html", research::slug(&self.viewer.question)));
+        self.modal = Modal::Export(Box::new(ExportModal {
+            ta: single_line_ta(&path.to_string_lossy()),
+            err: None,
+            rec,
+            report,
+        }));
+    }
+
+    /// pandoc runs in the background; the result arrives as a toast.
+    pub(super) fn export_pdf(&mut self, path: PathBuf, rec: Record, report: String) {
+        self.toast("Exporting PDF…");
+        let tx = self.run_tx.clone();
+        tokio::spawn(async move {
+            let msg = match export::pdf(&rec, &report, &path).await {
+                Ok(()) => format!("Exported to {}", path.display()),
+                Err(e) => format!("Export failed: {e}"),
+            };
+            let _ = tx.send(RunEvent::Toast(msg));
+        });
+    }
+
     pub(super) fn key_viewer(&mut self, k: KeyEvent) {
         if self.viewer.tabs.get(self.viewer.tab).is_some_and(|t| t.is_sources) && self.key_sources(k) {
             return;
@@ -111,6 +145,14 @@ impl App {
         }
         match k.code {
             KeyCode::Char('s') => self.open_save(),
+            KeyCode::Char('e') => self.open_export(),
+            KeyCode::Char('c') => {
+                if let Some(t) = self.viewer.tabs.get(self.viewer.tab) {
+                    osc52_copy(&t.text);
+                    let msg = format!("Copied {} to clipboard", t.label);
+                    self.toast(msg);
+                }
+            }
             KeyCode::Char('a') => self.open_chat(),
             KeyCode::Esc => {
                 let back = self.viewer.back;

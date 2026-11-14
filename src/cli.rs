@@ -5,10 +5,12 @@
 use crate::api::Client;
 use crate::auth::{self, Account, AuthHandle};
 use crate::config::{self, Config, MAX_AGENTS};
+use crate::export::{self, Format};
 use crate::paths;
 use crate::pricing::Pricing;
 use crate::research::store::{self, AgentStatus, LinkStatus, RunStatus, Support};
 use crate::research::{Ctx, Run, RunEvent, plan};
+use crate::research::{context, prompts};
 use crate::ui::fmt;
 use anyhow::{Context, bail};
 use serde_json::{Value, json};
@@ -21,16 +23,17 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 pub const USAGE: &str = "usage: rsc [--version | update]
-       rsc run \"<question>\" [--agents N|auto] [--verify] [--yes] [--no-clarify] [-o FILE] [--json]
+       rsc run \"<question>\" [--agents N|auto] [--preset NAME] [--context FILE]... [--verify] [--yes] [--no-clarify] [-o FILE] [--json]
        rsc resume <id> [--yes] [--no-clarify] [-o FILE] [--json]
        rsc ls
-       rsc show <id>";
+       rsc show <id>
+       rsc export <id> [--format md|html|json|pdf] [-o FILE]";
 
 const NEED_YES: &str = "Pass --yes to accept the plan when not running in a terminal.";
 
 #[derive(Debug, Default, PartialEq)]
 struct Opts {
-    /// Question for `run`, id for `resume` and `show`; empty for `ls`.
+    /// Question for `run`, id for `resume`, `show` and `export`; empty for `ls`.
     target: String,
     /// `Some(0)` = `--agents auto`.
     agents: Option<u8>,
@@ -39,6 +42,9 @@ struct Opts {
     no_clarify: bool,
     output: Option<PathBuf>,
     json: bool,
+    format: Option<Format>,
+    preset: Option<String>,
+    context: Vec<PathBuf>,
 }
 
 fn parse_opts(cmd: &str, args: &[String]) -> anyhow::Result<Opts> {
@@ -61,20 +67,35 @@ fn parse_opts(cmd: &str, args: &[String]) -> anyhow::Result<Opts> {
             "--yes" | "-y" if runs => o.yes = true,
             "--no-clarify" if runs => o.no_clarify = true,
             "--json" if runs => o.json = true,
-            "-o" | "--output" if runs => {
+            "-o" | "--output" if runs || cmd == "export" => {
                 o.output = Some(PathBuf::from(it.next().with_context(|| format!("{a} needs a file."))?));
             }
+            "--format" if cmd == "export" => {
+                let v = it.next().map(String::as_str).and_then(Format::parse);
+                o.format = Some(v.context("--format must be md, html, json or pdf.")?);
+            }
+            "--preset" if cmd == "run" => {
+                o.preset = Some(it.next().context("--preset needs a name.")?.clone());
+            }
+            "--preset" if cmd == "resume" => bail!("--preset only applies to rsc run."),
+            "--context" if cmd == "run" => {
+                o.context.push(PathBuf::from(it.next().context("--context needs a file.")?));
+            }
+            "--context" if cmd == "resume" => bail!("--context only applies to rsc run."),
             x if x.starts_with('-') => bail!("Unknown option {x}."),
             _ => positional.push(a.clone()),
         }
     }
     match (cmd, positional.len()) {
         ("ls", 0) => {}
-        ("run" | "resume" | "show", 1) => o.target = positional.remove(0),
+        ("run" | "resume" | "show" | "export", 1) => o.target = positional.remove(0),
         _ => bail!("{USAGE}"),
     }
     if cmd == "run" && o.target.trim().is_empty() {
         bail!("Question is empty.");
+    }
+    if o.context.len() > context::MAX_FILES {
+        bail!("At most {} context files.", context::MAX_FILES);
     }
     Ok(o)
 }
@@ -85,6 +106,7 @@ pub async fn main(args: &[String]) -> anyhow::Result<i32> {
     match cmd {
         "ls" => ls(),
         "show" => show(&opts.target),
+        "export" => export(opts).await,
         "run" => run(opts).await,
         _ => resume(opts).await,
     }
@@ -112,6 +134,28 @@ fn show(id: &str) -> anyhow::Result<i32> {
     Ok(0)
 }
 
+async fn export(opts: Opts) -> anyhow::Result<i32> {
+    let id = &opts.target;
+    let rec = store::load(id)?;
+    let Some(report) = rec.read_final() else {
+        bail!("No report for {id} (status: {}).", rec.status.label());
+    };
+    let format = opts.format.or_else(|| opts.output.as_deref().and_then(Format::from_path)).unwrap_or(Format::Md);
+    match (&opts.output, format) {
+        (None, Format::Pdf) => bail!("PDF export needs -o FILE."),
+        (Some(path), Format::Pdf) => export::pdf(&rec, &report, path).await?,
+        (None, f) => print_report(&export::render(&rec, &report, f)),
+        (Some(path), f) => {
+            paths::atomic_write(path, export::render(&rec, &report, f).as_bytes())
+                .with_context(|| format!("Couldn't write {}.", path.display()))?;
+        }
+    }
+    if let Some(path) = &opts.output {
+        eprintln!("rsc: exported to {}", path.display());
+    }
+    Ok(0)
+}
+
 fn print_report(report: &str) {
     let mut out = std::io::stdout().lock();
     let _ = out.write_all(report.as_bytes());
@@ -136,6 +180,7 @@ fn setup() -> anyhow::Result<Setup> {
         eprintln!("rsc: {b}");
     }
     let pricing = Pricing::load();
+    prompts::seed();
     let tty = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let acct = auth::active_account_id().and_then(|id| Account::load(&id).ok()).filter(Account::has_tokens);
     let Some(acct) = acct else { bail!("Not signed in. Run rsc to sign in.") };
@@ -149,6 +194,17 @@ fn setup() -> anyhow::Result<Setup> {
 
 async fn run(opts: Opts) -> anyhow::Result<i32> {
     let s = setup()?;
+    let preset = match &opts.preset {
+        Some(name) => match s.cfg.presets.get(name) {
+            Some(p) => Some((name.clone(), p.clone())),
+            None => {
+                let names: Vec<_> = s.cfg.presets.keys().map(String::as_str).collect();
+                bail!("Unknown preset {name}. Presets: {}.", names.join(", "));
+            }
+        },
+        None => None,
+    };
+    let context = opts.context.iter().map(|p| context::load(p)).collect::<anyhow::Result<Vec<_>>>()?;
     if !opts.yes && !s.tty {
         bail!(NEED_YES);
     }
@@ -157,18 +213,23 @@ async fn run(opts: Opts) -> anyhow::Result<i32> {
         bail!("No models available.");
     }
     let slugs: Vec<String> = models.into_iter().map(|m| m.slug).collect();
-    let stage = |m: &config::StageModel| config::resolve_model(m, &slugs);
+    let p = preset.as_ref().map(|(_, p)| p.clone()).unwrap_or_default();
+    let stage = |m: &config::StageModel| config::resolve_model(&p.stage(m), &slugs);
     let mut rc = s.cfg.run_config(
         stage(&s.cfg.planner),
         stage(&s.cfg.researcher),
-        stage(&s.cfg.compactor),
+        config::resolve_model(&s.cfg.compactor, &slugs),
         stage(&s.cfg.synthesizer),
-        opts.agents.unwrap_or(s.cfg.default_agents),
+        opts.agents.or(p.agents).unwrap_or(s.cfg.default_agents),
     );
+    p.apply(&mut rc);
+    if let Some((name, _)) = preset {
+        rc.preset = name;
+    }
     rc.verify_citations |= opts.verify;
     let sigint = signal(SignalKind::interrupt())?;
     let started = Instant::now();
-    let run = Run::start(s.ctx, opts.target.trim().to_string(), rc, s.tty && !opts.no_clarify);
+    let run = Run::start(s.ctx, opts.target.trim().to_string(), rc, context, s.tty && !opts.no_clarify);
     Ok(drive(run, s.rx, sigint, &opts, s.tty, started).await)
 }
 
@@ -288,6 +349,14 @@ impl Driver<'_> {
     async fn review(&mut self) {
         let ps = self.run.with(|s| s.record.perspectives.clone());
         eprintln!("Plan ({} angles):", ps.len());
+        let docs = self.run.with(|s| s.record.context.clone());
+        if !docs.is_empty() {
+            let names: Vec<_> = docs
+                .iter()
+                .map(|d| if d.truncated { format!("{} (truncated)", d.name) } else { d.name.clone() })
+                .collect();
+            eprintln!("Attached files (sent to the model): {}", names.join(", "));
+        }
         Self::print_angles(&ps);
         if self.opts.yes {
             self.run.launch();
@@ -503,8 +572,42 @@ mod tests {
                 no_clarify: true,
                 output: Some("out.md".into()),
                 json: true,
+                ..Opts::default()
             }
         );
+    }
+
+    #[test]
+    fn export_flags() {
+        let o = parse_opts("export", &args(&["id1", "--format", "html", "-o", "x.html"])).unwrap();
+        assert_eq!(
+            o,
+            Opts { target: "id1".into(), format: Some(Format::Html), output: Some("x.html".into()), ..Opts::default() }
+        );
+        let e = parse_opts("export", &args(&["id1", "--format", "docx"])).unwrap_err();
+        assert_eq!(e.to_string(), "--format must be md, html, json or pdf.");
+        let e = parse_opts("run", &args(&["q", "--format", "md"])).unwrap_err();
+        assert_eq!(e.to_string(), "Unknown option --format.");
+    }
+
+    #[test]
+    fn preset_and_context_flags() {
+        let o =
+            parse_opts("run", &args(&["q", "--preset", "deep", "--context", "a.md", "--context", "b.pdf"])).unwrap();
+        assert_eq!(o.preset.as_deref(), Some("deep"));
+        assert_eq!(o.context, vec![PathBuf::from("a.md"), PathBuf::from("b.pdf")]);
+        assert_eq!(parse_opts("run", &args(&["q", "--preset"])).unwrap_err().to_string(), "--preset needs a name.");
+        assert_eq!(parse_opts("run", &args(&["q", "--context"])).unwrap_err().to_string(), "--context needs a file.");
+        assert_eq!(
+            parse_opts("resume", &args(&["id", "--preset", "x"])).unwrap_err().to_string(),
+            "--preset only applies to rsc run."
+        );
+        assert_eq!(
+            parse_opts("resume", &args(&["id", "--context", "x"])).unwrap_err().to_string(),
+            "--context only applies to rsc run."
+        );
+        let many = ["q", "--context", "1", "--context", "2", "--context", "3", "--context", "4", "--context", "5"];
+        assert_eq!(parse_opts("run", &args(&many)).unwrap_err().to_string(), "At most 4 context files.");
     }
 
     #[test]

@@ -5,15 +5,14 @@ use super::*;
 
 const BUDGET_FOOTER: &str =
     "\n\n---\n\n*Research stopped early because the run budget was reached; some angles may be incomplete.*";
-const SYNTH_INSTRUCTIONS: &str = "Several researchers investigated the problem below from different angles. Combine their reports into one final answer in Markdown: integrate findings and resolve or flag conflicts. Cite sources by their number from the Sources list in square brackets, e.g. [3] or [2, 5]. If you use a source that is not on the list, cite it as a Markdown link [title](url). Do not write your own sources or references section; one is added automatically. You may search the web to verify key claims.";
 
 /// More finished reports than this are synthesized in groups first.
 const HIER_THRESHOLD: usize = 8;
 const GROUP_SIZE: usize = 6;
 const GROUP_INSTRUCTIONS: &str = "Merge these researcher reports into one detailed intermediate summary for a writer who will combine it with summaries of other report groups. Keep every finding, figure, date, disagreement and open question; drop repetition. Cite sources by their number from the Sources list in square brackets, e.g. [3], keeping the numbers exactly; cite a source that is not on the list as a Markdown link [title](url). Do not add a sources section.";
 
-fn synth_instructions(style: &str) -> String {
-    format!("{SYNTH_INSTRUCTIONS}{}", style_suffix(style))
+fn synth_instructions(template: &str, style: &str) -> String {
+    format!("{template}{}", style_suffix(style))
 }
 
 impl Run {
@@ -182,10 +181,11 @@ impl Run {
         };
         let block = if list.is_empty() { String::new() } else { format!("## Sources\n{list}") };
         let input = format!("Problem:\n{brief}\n\n{body}{block}");
+        let template = self.with(|s| s.record.prompts.synthesizer().to_string());
         let sm = &cfg.synthesizer;
         let req = ResponseRequest {
             model: sm.model.clone(),
-            instructions: synth_instructions(&cfg.report_style),
+            instructions: synth_instructions(&template, &cfg.report_style),
             input: vec![user_msg(&input)],
             tools: vec![tools::web_search_tool()],
             effort: Some(sm.effort.clone()),
@@ -238,9 +238,9 @@ mod tests {
 
     #[test]
     fn synth_instructions_append_style() {
-        assert_eq!(synth_instructions("  "), SYNTH_INSTRUCTIONS);
-        let s = synth_instructions("Explain like I'm 5");
-        assert!(s.starts_with(SYNTH_INSTRUCTIONS) && s.ends_with("Explain like I'm 5"));
+        assert_eq!(synth_instructions(prompts::SYNTHESIZER, "  "), prompts::SYNTHESIZER);
+        let s = synth_instructions(prompts::SYNTHESIZER, "Explain like I'm 5");
+        assert!(s.starts_with(prompts::SYNTHESIZER) && s.ends_with("Explain like I'm 5"));
     }
 
     #[test]

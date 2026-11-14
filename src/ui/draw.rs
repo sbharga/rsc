@@ -71,6 +71,8 @@ struct RunView {
     gap_notes: String,
     /// Some agent was added by the follow-up round.
     followup: bool,
+    /// Attached files: name, chars, truncated.
+    context: Vec<(String, usize, bool)>,
 }
 
 fn run_view(app: &App) -> Option<RunView> {
@@ -102,6 +104,7 @@ fn run_view(app: &App) -> Option<RunView> {
             gap_round: s.record.config.gap_round,
             gap_notes: s.record.gap_notes.clone(),
             followup: s.record.agents.iter().any(|a| a.followup),
+            context: s.record.context.iter().map(|d| (d.name.clone(), d.text.chars().count(), d.truncated)).collect(),
         }
     }))
 }
@@ -178,16 +181,19 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             "↑/↓ select · Enter open · c copy · v verdicts · Tab switch · ? help".to_string()
         }
         Screen::Viewer if app.viewer.chat.is_some() => {
-            "j/k scroll · Tab/1–9 switch · s save · a chat · ? help".to_string()
+            "j/k scroll · Tab/1–9 switch · s save · e export · a chat · ? help".to_string()
         }
-        Screen::Viewer => "j/k scroll · Tab/1–9 switch · s save · ? help".to_string(),
+        Screen::Viewer => "j/k scroll · Tab/1–9 switch · s save · c copy · ? help".to_string(),
         Screen::History => if app.history.filtering {
-            "type to filter · Enter keep · Esc clear"
+            "type to search · Enter keep · Esc clear"
         } else {
-            "Enter open · r resume · d delete · ? help"
+            "Enter open · / search · s sort · r resume · d delete · ? help"
         }
         .to_string(),
         Screen::Settings => "↑/↓ select · Enter edit · ? help".to_string(),
+        Screen::Chat if app.chat.as_ref().is_some_and(|c| c.chat.proposal().is_some()) => {
+            "Enter send · Ctrl+T run proposed research · PgUp/PgDn scroll · Esc back".to_string()
+        }
         Screen::Chat => "Enter send · Alt+Enter new line · PgUp/PgDn scroll · Esc back".to_string(),
     };
     f.render_widget(Paragraph::new(Span::styled(format!(" {hint}"), muted())), area);
@@ -250,11 +256,12 @@ fn chip(label: &str, value: String, selected: bool) -> Vec<Span<'static>> {
 
 fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
     let w = area.width.min(72);
-    let total_h = 9u16.min(area.height);
+    let total_h = 11u16.min(area.height);
     let top = area.y + area.height.saturating_sub(total_h) / 2;
     let col = Rect::new(area.x + (area.width - w) / 2, top, w, total_h);
-    let [inp, _, chips, _, active, banner] = Layout::vertical([
+    let [inp, _, chips, chips2, _, active, banner] = Layout::vertical([
         Constraint::Length(5),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -284,6 +291,16 @@ fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
     spans.extend(chip("Synth", stage(&h.synthesizer), sel(3)));
     let chips_full = Rect::new(area.x, chips.y, area.width, 1);
     f.render_widget(Paragraph::new(Line::from(spans)).alignment(Alignment::Center), chips_full);
+    let files = match h.context.len() {
+        0 => "none".to_string(),
+        1 => "1 file".to_string(),
+        n => format!("{n} files"),
+    };
+    let mut spans2: Vec<Span> = vec![];
+    spans2.extend(chip("Preset", h.preset.clone().unwrap_or_else(|| "none".into()), sel(4)));
+    spans2.extend(chip("Files", files, sel(5)));
+    let chips2_full = Rect::new(area.x, chips2.y, area.width, 1);
+    f.render_widget(Paragraph::new(Line::from(spans2)).alignment(Alignment::Center), chips2_full);
 
     let msg = match (&app.cfg_err, &app.models) {
         (Some(e), _) => Some(Span::styled(e.clone(), Style::new().fg(Color::Red))),
@@ -335,10 +352,20 @@ fn draw_review(f: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::from(Span::styled("Gaps after the first round", muted())));
         lines.extend(fmt::wrap(&rv.gap_notes, w).into_iter().map(Line::from));
         lines.push(Line::raw(""));
-    } else if !rv.understanding.is_empty() {
-        lines.push(Line::from(Span::styled("Understood as", muted())));
-        lines.extend(fmt::wrap(&rv.understanding, w).into_iter().map(Line::from));
-        lines.push(Line::raw(""));
+    } else {
+        if !rv.context.is_empty() {
+            lines.push(Line::from(Span::styled("Attached files (their text is sent to the model)", muted())));
+            for (name, chars, truncated) in &rv.context {
+                let cut = if *truncated { " (truncated)" } else { "" };
+                lines.push(Line::from(format!("  {name} · {chars} chars{cut}")));
+            }
+            lines.push(Line::raw(""));
+        }
+        if !rv.understanding.is_empty() {
+            lines.push(Line::from(Span::styled("Understood as", muted())));
+            lines.extend(fmt::wrap(&rv.understanding, w).into_iter().map(Line::from));
+            lines.push(Line::raw(""));
+        }
     }
     let n = rv.perspectives.len();
     lines.push(Line::from(Span::styled(
@@ -647,6 +674,14 @@ fn draw_sources(f: &mut Frame, v: &mut Viewer, area: Rect) {
     }
 }
 
+fn agents_label(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "1 agent".to_string(),
+        n => format!("{n} agents"),
+    }
+}
+
 fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
     let [filter, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
     if app.history.filtering || !app.history.filter.is_empty() {
@@ -659,6 +694,8 @@ fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
             filter,
         );
     }
+    let sorted = format!("sorted by {}", app.history.sort.label());
+    f.render_widget(Paragraph::new(Span::styled(sorted, muted())).alignment(Alignment::Right), filter);
     let items = app.history.visible();
     if items.is_empty() {
         f.render_widget(
@@ -669,7 +706,7 @@ fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let h = list.height as usize;
     let off = if app.history.sel >= h { app.history.sel + 1 - h } else { 0 };
-    let qw = (list.width as usize).saturating_sub(2 + 16 + 2 + 12 + 2 + 9);
+    let qw = (list.width as usize).saturating_sub(2 + 16 + 2 + 12 + 2 + 9 + 11);
     for (row, (i, r)) in items.iter().enumerate().skip(off).take(h).map(|(i, r)| (i, *r)).enumerate() {
         let selected = i == app.history.sel;
         let date = chrono::DateTime::parse_from_rfc3339(&r.created_at)
@@ -682,6 +719,8 @@ fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(pad(&date, 16), muted()),
             Span::raw("  "),
             Span::styled(pad(&one_line(&r.question), qw), if selected { sel_style() } else { Style::new() }),
+            Span::raw("  "),
+            Span::styled(pad(&agents_label(r.agents.len()), 9), muted()),
             Span::raw("  "),
             Span::styled(pad(r.status.label(), 12), status_style),
         ]);
@@ -780,6 +819,26 @@ fn modal_block(title: &str) -> Block<'static> {
     b
 }
 
+fn draw_path_modal(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    ta: &mut ratatui_textarea::TextArea<'static>,
+    err: Option<&str>,
+) {
+    let r = centered(area, 80.min(area.width), 6);
+    f.render_widget(Clear, r);
+    f.render_widget(modal_block(title), r);
+    let inner = r.inner(Margin::new(1, 1));
+    let [t, e] = Layout::vertical([Constraint::Length(3), Constraint::Length(1)]).areas(inner);
+    ta.set_block(Block::bordered().border_type(BorderType::Rounded).border_style(muted()));
+    ta.set_cursor_style(Style::new().add_modifier(Modifier::REVERSED));
+    f.render_widget(&*ta, t);
+    if let Some(err) = err {
+        f.render_widget(Paragraph::new(Span::styled(err.to_string(), Style::new().fg(Color::Red))), e);
+    }
+}
+
 fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     match &mut app.modal {
         Modal::None => {}
@@ -871,19 +930,9 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             f.render_widget(&s.ta, t);
             f.render_widget(Paragraph::new(Span::styled("Enter save · Alt+Enter new line · Esc cancel", muted())), h);
         }
-        Modal::Save(s) => {
-            let r = centered(area, 80.min(area.width), 6);
-            f.render_widget(Clear, r);
-            f.render_widget(modal_block("Save as"), r);
-            let inner = r.inner(Margin::new(1, 1));
-            let [t, e] = Layout::vertical([Constraint::Length(3), Constraint::Length(1)]).areas(inner);
-            s.ta.set_block(Block::bordered().border_type(BorderType::Rounded).border_style(muted()));
-            s.ta.set_cursor_style(Style::new().add_modifier(Modifier::REVERSED));
-            f.render_widget(&s.ta, t);
-            if let Some(err) = &s.err {
-                f.render_widget(Paragraph::new(Span::styled(err.clone(), Style::new().fg(Color::Red))), e);
-            }
-        }
+        Modal::Save(s) => draw_path_modal(f, area, "Save as", &mut s.ta, s.err.as_deref()),
+        Modal::Export(m) => draw_path_modal(f, area, "Export as (.md .html .json .pdf)", &mut m.ta, m.err.as_deref()),
+        Modal::Attach(m) => draw_path_modal(f, area, "Attach file (.md .txt .pdf)", &mut m.ta, m.err.as_deref()),
         Modal::Number(n) => {
             let title = match n.which {
                 Num::DefaultAgents => format!("Default agents (1–{MAX_AGENTS})"),
@@ -966,6 +1015,9 @@ fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
         Screen::Home if app.home.chips => vec![
             ("←/→", "move between options"),
             ("Enter/Space", "change option"),
+            ("Enter (Preset)", "cycle presets"),
+            ("Enter (Files)", "attach a .md, .txt or .pdf"),
+            ("x (Files)", "remove attached files"),
             ("+/-", "agents"),
             ("m", "manage usage"),
             ("r", "retry loading models"),
@@ -1014,8 +1066,9 @@ fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Tab/Shift+Tab", "switch tab"),
             ("1–9", "jump to tab"),
             ("s", "save"),
+            ("e", "export final report (.md .html .json .pdf)"),
             ("Enter/o", "open source (Sources tab)"),
-            ("c", "copy source URL (Sources tab)"),
+            ("c", "copy tab (URL on Sources tab)"),
             ("v", "citation check (Sources tab)"),
             ("a", "chat about the final report"),
             ("Esc", "back"),
@@ -1023,15 +1076,20 @@ fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
         Screen::History => vec![
             ("↑/↓", "select"),
             ("Enter", "open"),
-            ("/", "filter"),
+            ("/", "search questions and reports"),
+            ("s", "sort by date or cost"),
             ("r", "resume"),
             ("d", "delete"),
             ("Esc", "home"),
         ],
         Screen::Settings => vec![("↑/↓", "select"), ("Enter/Space", "edit or toggle"), ("Esc", "back")],
-        Screen::Chat => {
-            vec![("Enter", "send"), ("Alt+Enter", "new line"), ("PgUp/PgDn", "scroll"), ("Esc", "back to the report")]
-        }
+        Screen::Chat => vec![
+            ("Enter", "send"),
+            ("Alt+Enter", "new line"),
+            ("Ctrl+T", "run the proposed research"),
+            ("PgUp/PgDn", "scroll"),
+            ("Esc", "back to the report"),
+        ],
         Screen::SignIn => vec![],
     }
 }

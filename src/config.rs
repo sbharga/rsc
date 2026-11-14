@@ -50,6 +50,67 @@ pub struct Config {
     pub verify_citations: bool,
     /// Let a reviewer propose follow-up researchers after the first round.
     pub gap_round: bool,
+    /// Named run profiles, `[presets.<name>]`.
+    pub presets: std::collections::BTreeMap<String, Preset>,
+}
+
+/// Named run profile in `[presets.<name>]`; unset fields keep the config value.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Preset {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<u8>,
+    /// Effort for planner, researcher and synthesizer (models stay as configured; slugs differ per account).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_words: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap_round: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify_citations: Option<bool>,
+}
+
+impl Preset {
+    /// `sm` with this preset's effort.
+    pub fn stage(&self, sm: &StageModel) -> StageModel {
+        StageModel { model: sm.model.clone(), effort: self.effort.clone().unwrap_or_else(|| sm.effort.clone()) }
+    }
+
+    /// Settings the Home chips don't show: report_words, max_turns, gap_round, verify_citations.
+    pub fn apply(&self, rc: &mut RunConfig) {
+        if let Some(v) = self.report_words {
+            rc.report_words = v;
+        }
+        if let Some(v) = self.max_turns {
+            rc.max_turns = v;
+        }
+        if let Some(v) = self.gap_round {
+            rc.gap_round = v;
+        }
+        if let Some(v) = self.verify_citations {
+            rc.verify_citations = v;
+        }
+    }
+}
+
+fn default_presets() -> std::collections::BTreeMap<String, Preset> {
+    let p = |agents, effort: &str, report_words, max_turns, gap_round| Preset {
+        agents: Some(agents),
+        effort: Some(effort.into()),
+        report_words,
+        max_turns,
+        gap_round,
+        verify_citations: None,
+    };
+    [
+        ("quick".to_string(), p(2, "low", Some(500), Some(10), None)),
+        ("standard".to_string(), p(0, "medium", None, None, None)),
+        ("deep".to_string(), p(6, "high", None, Some(50), Some(true))),
+    ]
+    .into()
 }
 
 impl Default for Config {
@@ -73,6 +134,7 @@ impl Default for Config {
             check_links: true,
             verify_citations: false,
             gap_round: false,
+            presets: default_presets(),
         }
     }
 }
@@ -92,6 +154,15 @@ impl Config {
         }
         self.max_turns = self.max_turns.max(1);
         self.max_run_cost_usd = self.max_run_cost_usd.max(0.0);
+        for p in self.presets.values_mut() {
+            if let Some(n) = p.agents.filter(|&n| n != 0) {
+                p.agents = Some(n.clamp(1, MAX_AGENTS));
+            }
+            if let Some(n) = p.report_words.filter(|&n| n != 0) {
+                p.report_words = Some(n.max(100));
+            }
+            p.max_turns = p.max_turns.map(|n| n.max(1));
+        }
     }
 
     /// Per-run settings: the given stage models and agent count, the rest copied from this config.
@@ -115,6 +186,7 @@ impl Config {
             max_turns: self.max_turns,
             compact_threshold_tokens: self.compact_threshold_tokens,
             synth_input_budget_tokens: self.synth_input_budget_tokens,
+            preset: String::new(),
             report_style: self.report_style.trim().to_string(),
             max_run_tokens: self.max_run_tokens,
             max_run_cost_usd: self.max_run_cost_usd,
@@ -173,5 +245,40 @@ mod tests {
         c.default_agents = 0;
         c.clamp();
         assert_eq!(c.default_agents, 0);
+    }
+
+    #[test]
+    fn clamp_limits_presets() {
+        let mut c = Config::default();
+        c.presets.insert(
+            "x".into(),
+            Preset { agents: Some(200), report_words: Some(5), max_turns: Some(0), ..Preset::default() },
+        );
+        c.presets.insert("auto".into(), Preset { agents: Some(0), report_words: Some(0), ..Preset::default() });
+        c.clamp();
+        let x = &c.presets["x"];
+        assert_eq!((x.agents, x.report_words, x.max_turns), (Some(MAX_AGENTS), Some(100), Some(1)));
+        let a = &c.presets["auto"];
+        assert_eq!((a.agents, a.report_words), (Some(0), Some(0)));
+    }
+
+    #[test]
+    fn preset_overrides_only_what_it_sets() {
+        let c = Config::default();
+        let p = Preset { effort: Some("low".into()), max_turns: Some(7), gap_round: Some(true), ..Preset::default() };
+        let sm = StageModel { model: "m".into(), effort: "high".into() };
+        assert_eq!(p.stage(&sm), StageModel { model: "m".into(), effort: "low".into() });
+        assert_eq!(Preset::default().stage(&sm), sm);
+        let mut rc = c.run_config(sm.clone(), sm.clone(), sm.clone(), sm, 3);
+        p.apply(&mut rc);
+        assert_eq!((rc.max_turns, rc.gap_round, rc.report_words), (7, true, c.report_words));
+    }
+
+    #[test]
+    fn default_presets_round_trip_through_toml() {
+        let c = Config::default();
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains("[presets.quick]"));
+        assert_eq!(toml::from_str::<Config>(&s).unwrap().presets, c.presets);
     }
 }

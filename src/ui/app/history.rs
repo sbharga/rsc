@@ -10,7 +10,10 @@ impl App {
                 *slot = rec;
             }
         }
+        self.history.reports =
+            items.iter().filter_map(|r| Some((r.id.clone(), r.read_final()?.to_lowercase()))).collect();
         self.history.items = items;
+        self.history.sort_items();
         self.history.sel = 0;
         self.history.filtering = false;
         self.history.filter.clear();
@@ -31,6 +34,7 @@ impl App {
             KeyCode::Up => self.history.sel = self.history.sel.saturating_sub(1),
             KeyCode::Down => self.history.sel = (self.history.sel + 1).min(n.saturating_sub(1)),
             KeyCode::Char('/') => self.history.filtering = true,
+            KeyCode::Char('s') => self.history.toggle_sort(),
             KeyCode::Esc => self.screen = Screen::Home,
             KeyCode::Enter => {
                 let Some(rec) = self.selected_history() else { return };
@@ -85,10 +89,37 @@ impl App {
 }
 
 impl History {
-    /// Records whose question contains the filter (case-insensitive); all when the filter is empty.
+    /// Records whose question or report contains the filter (case-insensitive); all when the filter is empty.
     pub fn visible(&self) -> Vec<&Record> {
         let f = self.filter.to_lowercase();
-        self.items.iter().filter(|r| f.is_empty() || r.question.to_lowercase().contains(&f)).collect()
+        self.items
+            .iter()
+            .filter(|r| {
+                f.is_empty()
+                    || r.question.to_lowercase().contains(&f)
+                    || self.reports.get(&r.id).is_some_and(|t| t.contains(&f))
+            })
+            .collect()
+    }
+
+    /// Order `items` by the current sort; ties and Date order are newest first.
+    pub fn sort_items(&mut self) {
+        let newest = |a: &Record, b: &Record| (&b.created_at, &b.id).cmp(&(&a.created_at, &a.id));
+        match self.sort {
+            HistSort::Date => self.items.sort_by(newest),
+            HistSort::Cost => {
+                self.items.sort_by(|a, b| b.cost_usd_total.total_cmp(&a.cost_usd_total).then_with(|| newest(a, b)))
+            }
+        }
+    }
+
+    pub fn toggle_sort(&mut self) {
+        self.sort = match self.sort {
+            HistSort::Date => HistSort::Cost,
+            HistSort::Cost => HistSort::Date,
+        };
+        self.sort_items();
+        self.sel = 0;
     }
 
     /// A key typed while the filter box is active.
@@ -124,7 +155,7 @@ mod tests {
                 )
             })
             .collect();
-        History { items, filter: String::new(), filtering: true, sel: 2 }
+        History { items, filter: String::new(), filtering: true, sel: 2, reports: HashMap::new(), sort: HistSort::Date }
     }
 
     fn type_str(h: &mut History, s: &str) {
@@ -162,5 +193,36 @@ mod tests {
         h.filtering = true;
         h.filter_key(KeyCode::Esc);
         assert_eq!((h.filter.as_str(), h.filtering), ("", false));
+    }
+
+    #[test]
+    fn visible_matches_report_text() {
+        let mut h = history(&["alpha", "beta"]);
+        let id = h.items[1].id.clone();
+        h.reports.insert(id, "the Recycling rates".to_lowercase());
+        type_str(&mut h, "RECYCLING");
+        let q: Vec<_> = h.visible().iter().map(|r| r.question.as_str()).collect();
+        assert_eq!(q, ["beta"]);
+    }
+
+    #[test]
+    fn sort_by_cost_then_back_to_date() {
+        let mut h = history(&["old", "mid", "new"]);
+        for (r, (t, c)) in h.items.iter_mut().zip([
+            ("2025-01-01T00:00:00Z", 2.0),
+            ("2025-01-02T00:00:00Z", 9.0),
+            ("2025-01-03T00:00:00Z", 2.0),
+        ]) {
+            r.created_at = t.into();
+            r.cost_usd_total = c;
+        }
+        h.sort_items();
+        let order = |h: &History| h.items.iter().map(|r| r.question.clone()).collect::<Vec<_>>();
+        assert_eq!(order(&h), ["new", "mid", "old"]);
+        h.toggle_sort();
+        assert_eq!((h.sort, h.sel), (HistSort::Cost, 0));
+        assert_eq!(order(&h), ["mid", "new", "old"]);
+        h.toggle_sort();
+        assert_eq!(order(&h), ["new", "mid", "old"]);
     }
 }

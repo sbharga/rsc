@@ -20,7 +20,8 @@ CI runs `cargo fmt --check`, clippy and the tests on Ubuntu and macOS. All must 
 | File | Role |
 |---|---|
 | `src/main.rs` | Entry point, `--version`, command dispatch |
-| `src/cli.rs` | Headless `rsc run`, `resume`, `ls`, `show` (no ratatui) |
+| `src/cli.rs` | Headless `rsc run`, `resume`, `ls`, `show`, `export` (no ratatui) |
+| `src/export.rs` | Report export: Markdown front matter, HTML, JSON, PDF via pandoc (no ratatui) |
 | `tests/` | End-to-end tests: real binary against a scripted SSE mock (`tests/support/mod.rs`) |
 | `src/ui/mod.rs` | Terminal setup and event loop (key, paste, `AppMsg`, `RunEvent`, 100 ms tick) |
 | `src/ui/app.rs` | `App` state, type definitions, startup, messages, run lifecycle, key routing (`on_key`, `on_paste`) |
@@ -33,6 +34,8 @@ CI runs `cargo fmt --check`, clippy and the tests on Ubuntu and macOS. All must 
 | `src/research/synth.rs` | Final synthesis and report condensing |
 | `src/research/store.rs` | `Record`/`RunStatus` persistence and `progress` |
 | `src/research/sources.rs` | Source extraction, dedup, `[n]` citation parsing and numbered lists (pure) |
+| `src/research/context.rs` | Attached local files: `load` (.md, .txt, .pdf) and the `block` added to the task brief |
+| `src/research/prompts.rs` | Built-in stage prompts, `~/.rsc/prompts/*.md` seeding and loading, `fill` placeholders |
 | `src/research/tools.rs` | `web_search` and `fetch_url` tools |
 | `src/api/mod.rs` | Responses API client, SSE streaming, error classification, retry |
 | `src/api/sse.rs` | SSE parser |

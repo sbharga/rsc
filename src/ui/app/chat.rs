@@ -1,4 +1,6 @@
 use super::*;
+use crate::config::MAX_AGENTS;
+use crate::research::store;
 
 impl App {
     /// Open the follow-up chat for the report in the viewer.
@@ -20,6 +22,10 @@ impl App {
     }
 
     pub(super) fn key_chat(&mut self, k: KeyEvent) {
+        if ctrl(&k, 't') {
+            self.confirm_deepen();
+            return;
+        }
         let Some(cv) = self.chat.as_mut() else {
             self.screen = Screen::Home;
             return;
@@ -48,5 +54,63 @@ impl App {
                 cv.input.input(k);
             }
         }
+    }
+
+    /// Ctrl+T: confirm running the angles the last answer proposed.
+    fn confirm_deepen(&mut self) {
+        let Some(cv) = &self.chat else { return };
+        let (busy, proposal, id) = (cv.chat.busy(), cv.chat.proposal(), cv.chat.id().to_string());
+        if busy {
+            self.toast("Wait for the current answer");
+            return;
+        }
+        let Some((question, angles)) = proposal else {
+            self.toast("No research proposed");
+            return;
+        };
+        if self.run_live() {
+            self.toast("A research is already running — Ctrl+G");
+            return;
+        }
+        let rec = match store::load(&id) {
+            Ok(r) => r,
+            Err(e) => {
+                self.toast(format!("Couldn't load research: {e}"));
+                return;
+            }
+        };
+        if rec.status != RunStatus::Done {
+            self.toast("Research is not done");
+        } else if rec.budget_hit || rec.over_budget() {
+            self.toast("This research hit its budget cap");
+        } else if rec.agents.len() + angles.len() > MAX_AGENTS as usize {
+            self.toast(format!("Maximum {MAX_AGENTS} agents"));
+        } else {
+            let n = angles.len();
+            self.modal = Modal::Confirm(Confirm {
+                text: format!("Run {n} researcher{} and write a new revision? y/n", if n == 1 { "" } else { "s" }),
+                kind: ConfirmKind::Deepen { id, question, angles },
+            });
+        }
+    }
+
+    /// Start the deep-dive: new researchers, then a new report revision.
+    pub(super) fn deepen(&mut self, id: &str, question: String, angles: Vec<Perspective>) {
+        let Some(ctx) = self.ctx() else { return };
+        let rec = match store::load(id) {
+            Ok(r) => r,
+            Err(e) => {
+                self.toast(format!("Couldn't load research: {e}"));
+                return;
+            }
+        };
+        // The next chat must open on the new report.
+        if let Some(c) = self.chat.take() {
+            c.chat.cancel.cancel();
+        }
+        self.run = Some(Run::deepen(ctx, rec, question, angles));
+        self.run_sel = 0;
+        self.inspect = Inspect::default();
+        self.screen = Screen::Run;
     }
 }

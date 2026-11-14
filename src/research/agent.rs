@@ -208,8 +208,14 @@ impl Run {
     }
 
     async fn run_agent(self: &Arc<Self>, idx: usize) -> Result<String, ApiError> {
-        let (brief, p, cfg) =
-            self.with(|s| (task_brief(&s.record), s.record.perspectives[idx].clone(), s.record.config.clone()));
+        let (brief, p, cfg, template) = self.with(|s| {
+            (
+                task_brief(&s.record),
+                s.record.perspectives[idx].clone(),
+                s.record.config.clone(),
+                s.record.prompts.researcher().to_string(),
+            )
+        });
         let sm: &StageModel = &cfg.researcher;
         let length = if cfg.report_words == 0 {
             "as long as your findings need: thorough, with no padding".to_string()
@@ -219,8 +225,8 @@ impl Run {
         let mut req = ResponseRequest {
             model: sm.model.clone(),
             instructions: format!(
-                "You are one of several researchers working independently on the problem below. Your angle: {} — {}\nInvestigate as you see fit using the available tools. When finished, reply with a Markdown report {}: key findings, evidence, open uncertainties, and the sources you relied on as Markdown links [title](url).{UNTRUSTED_NOTE}",
-                p.title, p.brief, length
+                "{}{UNTRUSTED_NOTE}",
+                prompts::fill(&template, &[("title", &p.title), ("brief", &p.brief), ("length", &length)])
             ),
             input: vec![user_msg(&brief)],
             tools: vec![],

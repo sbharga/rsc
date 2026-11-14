@@ -15,13 +15,14 @@ use crate::auth::{self, Account, AuthError, AuthHandle, SignInUi, USAGE_URL};
 use crate::config::{Config, StageModel, resolve_model};
 use crate::pricing::Pricing;
 use crate::research::chat::Chat;
-use crate::research::store::{ChatRole, Record, RunStatus, Source, Support};
+use crate::research::store::{ChatRole, LocalDoc, Perspective, Record, RunStatus, Source, Support};
 use crate::research::{self, Ctx, Run, RunEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType};
 use ratatui_textarea::{TextArea, WrapMode};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -37,6 +38,7 @@ pub enum AppMsg {
     SignedOut(bool),
     Models(String, Result<Vec<ModelInfo>, ApiError>),
     UpdateAvailable(String),
+    Context(Result<LocalDoc, String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -110,6 +112,8 @@ pub enum ConfirmKind {
     CancelRun,
     Delete(String),
     Overwrite { path: PathBuf, text: String },
+    ExportPdf { path: PathBuf, rec: Box<Record>, report: String },
+    Deepen { id: String, question: String, angles: Vec<Perspective> },
 }
 
 pub struct Confirm {
@@ -120,6 +124,20 @@ pub struct Confirm {
 pub struct SaveModal {
     pub ta: TextArea<'static>,
     pub text: String,
+    pub err: Option<String>,
+}
+
+/// Export prompt: the record and report are captured when it opens.
+pub struct ExportModal {
+    pub ta: TextArea<'static>,
+    pub err: Option<String>,
+    pub rec: Record,
+    pub report: String,
+}
+
+/// File path prompt (attach a local file).
+pub struct PathInput {
+    pub ta: TextArea<'static>,
     pub err: Option<String>,
 }
 
@@ -167,6 +185,8 @@ pub enum Modal {
     Number(Box<NumberEdit>),
     Style(Box<StyleEdit>),
     Detail(Vec<String>),
+    Export(Box<ExportModal>),
+    Attach(Box<PathInput>),
     Help,
 }
 
@@ -178,6 +198,10 @@ pub struct Home {
     pub planner: StageModel,
     pub researcher: StageModel,
     pub synthesizer: StageModel,
+    /// Preset chosen with the Preset chip; applied when the run starts.
+    pub preset: Option<String>,
+    /// Files attached with the Files chip.
+    pub context: Vec<LocalDoc>,
 }
 
 pub struct ViewTab {
@@ -207,6 +231,25 @@ pub struct History {
     pub filter: String,
     pub filtering: bool,
     pub sel: usize,
+    /// Run id → lowercased final report, so the filter can match report text.
+    pub reports: HashMap<String, String>,
+    /// Kept across opens.
+    pub sort: HistSort,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistSort {
+    Date,
+    Cost,
+}
+
+impl HistSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            HistSort::Date => "date",
+            HistSort::Cost => "cost",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -321,11 +364,21 @@ impl ChatView {
         });
         if let Some(msgs) = msgs {
             let mut lines: Vec<Line<'static>> = vec![];
-            for m in msgs {
+            let last = msgs.len().saturating_sub(1);
+            for (i, m) in msgs.into_iter().enumerate() {
                 match m.role {
                     ChatRole::User => you_block(&m.text, &mut lines),
                     ChatRole::Assistant => {
                         lines.extend(own_text(tui_markdown::from_str(&m.text)).lines);
+                        if i == last && !m.research.is_empty() {
+                            lines.push(Line::styled("Proposed research — Ctrl+T to run", Style::new().fg(ACCENT)));
+                            for (j, p) in m.research.iter().enumerate() {
+                                lines.push(Line::styled(
+                                    format!("  {}. {} — {}", j + 1, p.title, p.brief),
+                                    Style::new().fg(MUTED),
+                                ));
+                            }
+                        }
                         lines.push(Line::raw(""));
                     }
                 }
@@ -407,6 +460,8 @@ impl App {
             planner: cfg.planner.clone(),
             researcher: cfg.researcher.clone(),
             synthesizer: cfg.synthesizer.clone(),
+            preset: None,
+            context: vec![],
         };
         let mut app = App {
             cfg,
@@ -436,7 +491,14 @@ impl App {
                 src_sel: 0,
                 chat: None,
             },
-            history: History { items: vec![], filter: String::new(), filtering: false, sel: 0 },
+            history: History {
+                items: vec![],
+                filter: String::new(),
+                filtering: false,
+                sel: 0,
+                reports: HashMap::new(),
+                sort: HistSort::Date,
+            },
             settings_sel: 0,
             toast: None,
             tick: 0,
@@ -632,6 +694,18 @@ impl App {
     pub fn on_msg(&mut self, m: AppMsg) {
         match m {
             AppMsg::UpdateAvailable(tag) => self.update = Some(tag),
+            AppMsg::Context(Ok(doc)) => {
+                if self.home.context.len() >= research::context::MAX_FILES {
+                    self.toast(format!("At most {} files", research::context::MAX_FILES));
+                } else if self.home.context.iter().any(|d| d.path == doc.path) {
+                    self.toast("Already attached");
+                } else {
+                    let note = if doc.truncated { " (truncated)" } else { "" };
+                    self.toast(format!("Attached {}{note}", doc.name));
+                    self.home.context.push(doc);
+                }
+            }
+            AppMsg::Context(Err(e)) => self.toast(e),
             AppMsg::SignInUrl(u) => {
                 if let SignInPhase::Waiting { url, .. } = &mut self.signin.phase {
                     *url = Some(u);
@@ -759,14 +833,21 @@ impl App {
             return;
         };
         let Some(ctx) = self.ctx() else { return };
-        let rc = self.cfg.run_config(
+        let mut rc = self.cfg.run_config(
             self.resolved(&self.home.planner),
             self.resolved(&self.home.researcher),
             self.resolved(&self.cfg.compactor),
             self.resolved(&self.home.synthesizer),
             self.home.agents,
         );
-        self.run = Some(Run::start(ctx, q, rc, true));
+        if let Some(name) = self.home.preset.clone()
+            && let Some(p) = self.cfg.presets.get(&name)
+        {
+            p.apply(&mut rc);
+            rc.preset = name;
+        }
+        let context = std::mem::take(&mut self.home.context);
+        self.run = Some(Run::start(ctx, q, rc, context, true));
         self.home.input.select_all();
         self.home.input.cut();
         self.run_sel = 0;
@@ -879,6 +960,12 @@ impl App {
     pub fn on_paste(&mut self, s: String) {
         match &mut self.modal {
             Modal::Save(m) => {
+                m.ta.insert_str(s.replace('\n', ""));
+            }
+            Modal::Export(m) => {
+                m.ta.insert_str(s.replace('\n', ""));
+            }
+            Modal::Attach(m) => {
                 m.ta.insert_str(s.replace('\n', ""));
             }
             Modal::Angle(a) => {

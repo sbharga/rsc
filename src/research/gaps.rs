@@ -27,6 +27,28 @@ fn parse_gaps(text: &str) -> Option<(String, Vec<Perspective>)> {
     Some((notes, gaps))
 }
 
+/// Append `ps` as follow-up researchers; returns their agent indices.
+fn add_followups(s: &mut RunState, ps: &[Perspective]) -> Vec<usize> {
+    let start = s.record.agents.len();
+    for p in ps {
+        s.record.agents.push(AgentRec {
+            title: p.title.clone(),
+            brief: p.brief.clone(),
+            status: AgentStatus::Pending,
+            error: None,
+            usage: Usage::default(),
+            cost_usd: None,
+            turns: 0,
+            followup: true,
+        });
+        s.activity.push(String::new());
+        s.logs.push(vec![]);
+        s.reports.push(None);
+    }
+    s.record.perspectives.extend(ps.iter().cloned());
+    (start..s.record.agents.len()).collect()
+}
+
 impl Run {
     async fn review_gaps(self: &Arc<Self>) -> Result<(), ApiError> {
         let (brief, sm, agents, reports, budget) = self.with(|s| {
@@ -108,6 +130,47 @@ impl Run {
         self.finish().await;
     }
 
+    /// Chat deep-dive: run `angles` on a finished run and write a new report revision.
+    /// The previous `report.md` is kept as `report.v<n>.md`; synthesis then covers every report.
+    pub fn deepen(ctx: Ctx, mut record: Record, question: String, angles: Vec<Perspective>) -> Arc<Run> {
+        let cur = record.revision.max(1);
+        record.revision = cur + 1;
+        record.followups.push(question);
+        // Straight to synthesis after the new researchers; no second gap review.
+        record.gaps_reviewed = true;
+        record.error = None;
+        let dir = record.dir();
+        let old = record.read_final();
+        // The proposal in the chat log is consumed.
+        let mut log = record.read_chat();
+        if log.messages.iter().any(|m| !m.research.is_empty()) {
+            log.messages.iter_mut().for_each(|m| m.research.clear());
+            let _ = record.write_chat(&log);
+        }
+        let run = Run::new(ctx, record);
+        if let Some(old) = old {
+            let p = dir.join(format!("report.v{cur}.md"));
+            if !p.exists()
+                && let Err(e) = crate::paths::atomic_write(&p, old.as_bytes())
+            {
+                run.notify(RunEvent::Toast(format!("Couldn't archive the report: {e}")));
+            }
+        }
+        let idxs = run.with(|s| {
+            for i in 0..s.record.agents.len() {
+                if s.record.agents[i].status == AgentStatus::Done {
+                    s.reports[i] = s.record.read_agent_report(i);
+                }
+            }
+            let idxs = add_followups(s, &angles);
+            s.record.status = RunStatus::Researching;
+            idxs
+        });
+        run.persist();
+        tokio::spawn(run.clone().drive(idxs));
+        run
+    }
+
     /// From gap review: add the proposed angles as researchers and run them.
     pub fn approve_gaps(self: &Arc<Self>) {
         let new = self.with(|s| {
@@ -115,27 +178,11 @@ impl Run {
                 return None;
             }
             let gaps = std::mem::take(&mut s.record.gaps);
-            let start = s.record.agents.len();
-            for g in &gaps {
-                s.record.agents.push(AgentRec {
-                    title: g.title.clone(),
-                    brief: g.brief.clone(),
-                    status: AgentStatus::Pending,
-                    error: None,
-                    usage: Usage::default(),
-                    cost_usd: None,
-                    turns: 0,
-                    followup: true,
-                });
-                s.activity.push(String::new());
-                s.logs.push(vec![]);
-                s.reports.push(None);
-            }
-            s.record.perspectives.extend(gaps.iter().cloned());
+            let idxs = add_followups(s, &gaps);
             if !gaps.is_empty() {
                 s.record.status = RunStatus::Researching;
             }
-            Some((start..s.record.agents.len()).collect::<Vec<_>>())
+            Some(idxs)
         });
         match new {
             None => {}

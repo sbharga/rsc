@@ -1,7 +1,16 @@
 use super::fmt::expand_tilde;
 use super::review::upsert_angle;
 use super::*;
+use crate::export::{self, Format};
 use crate::research::store::{self, Perspective};
+
+fn parent_exists(path: &std::path::Path) -> bool {
+    match path.parent() {
+        Some(p) if p.as_os_str().is_empty() => PathBuf::from(".").is_dir(),
+        Some(p) => p.is_dir(),
+        None => false,
+    }
+}
 
 impl App {
     pub(super) fn modal_key(&mut self, m: Modal, k: KeyEvent) -> Modal {
@@ -43,6 +52,8 @@ impl App {
             Modal::Angle(a) => self.angle_key(a, k),
             Modal::Confirm(c) => self.confirm_key(c, k),
             Modal::Save(s) => self.save_key(s, k),
+            Modal::Export(m) => self.export_key(m, k),
+            Modal::Attach(m) => self.attach_key(m, k),
             Modal::Style(s) => self.style_key(s, k),
             Modal::Number(n) => self.number_key(n, k),
             Modal::Account(items, sel) => self.account_key(items, sel, k),
@@ -164,6 +175,8 @@ impl App {
                         Err(e) => self.toast(format!("Delete failed: {e}")),
                     },
                     ConfirmKind::Overwrite { path, text } => self.do_save(path, &text),
+                    ConfirmKind::ExportPdf { path, rec, report } => self.export_pdf(path, *rec, report),
+                    ConfirmKind::Deepen { id, question, angles } => self.deepen(&id, question, angles),
                 }
                 Modal::None
             }
@@ -181,9 +194,7 @@ impl App {
                 if raw.trim().is_empty() {
                     return Modal::Save(s);
                 }
-                let parent =
-                    path.parent().map(|p| if p.as_os_str().is_empty() { PathBuf::from(".") } else { p.to_path_buf() });
-                if !parent.is_some_and(|p| p.is_dir()) {
+                if !parent_exists(&path) {
                     s.err = Some("Folder doesn't exist".into());
                     return Modal::Save(s);
                 }
@@ -200,6 +211,72 @@ impl App {
                 s.err = None;
                 s.ta.input(k);
                 Modal::Save(s)
+            }
+        }
+    }
+
+    pub(super) fn export_key(&mut self, mut m: Box<ExportModal>, k: KeyEvent) -> Modal {
+        match k.code {
+            KeyCode::Esc => Modal::None,
+            KeyCode::Enter => {
+                let raw = m.ta.lines().join("");
+                if raw.trim().is_empty() {
+                    return Modal::Export(m);
+                }
+                let path = expand_tilde(raw.trim());
+                if !parent_exists(&path) {
+                    m.err = Some("Folder doesn't exist".into());
+                    return Modal::Export(m);
+                }
+                let Some(format) = Format::from_path(&path) else {
+                    m.err = Some("Use .md, .html, .json or .pdf".into());
+                    return Modal::Export(m);
+                };
+                let ExportModal { rec, report, .. } = *m;
+                if path.exists() {
+                    let text = format!("Overwrite {}? y/n", path.display());
+                    let kind = if format == Format::Pdf {
+                        ConfirmKind::ExportPdf { path, rec: Box::new(rec), report }
+                    } else {
+                        ConfirmKind::Overwrite { path, text: export::render(&rec, &report, format) }
+                    };
+                    return Modal::Confirm(Confirm { text, kind });
+                }
+                if format == Format::Pdf {
+                    self.export_pdf(path, rec, report);
+                } else {
+                    self.do_save(path, &export::render(&rec, &report, format));
+                }
+                Modal::None
+            }
+            _ => {
+                m.err = None;
+                m.ta.input(k);
+                Modal::Export(m)
+            }
+        }
+    }
+
+    pub(super) fn attach_key(&mut self, mut m: Box<PathInput>, k: KeyEvent) -> Modal {
+        match k.code {
+            KeyCode::Esc => Modal::None,
+            KeyCode::Enter => {
+                let raw = m.ta.lines().join("");
+                if raw.trim().is_empty() {
+                    return Modal::Attach(m);
+                }
+                let path = expand_tilde(raw.trim());
+                if !path.is_file() {
+                    m.err = Some("File doesn't exist".into());
+                    return Modal::Attach(m);
+                }
+                self.attach(path);
+                Modal::None
+            }
+            _ => {
+                m.err = None;
+                m.ta.input(k);
+                Modal::Attach(m)
             }
         }
     }

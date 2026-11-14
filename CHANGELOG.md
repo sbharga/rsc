@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0
+
+- Export: `rsc export <id> [--format md|html|json|pdf] [-o FILE]`; `e` in the viewer exports the final report, `c` copies the current tab. Markdown gets YAML front matter, HTML is a self-contained page, PDF needs `pandoc` on `PATH`.
+- History: `/` searches report text as well as questions, `s` sorts by date or cost, rows show the agent count.
+- Presets: `[presets.<name>]` in `config.toml` (defaults `quick`, `standard`, `deep`), a Preset chip on Home and `rsc run --preset NAME`.
+- Editable prompts: `~/.rsc/prompts/{planner,researcher,synthesizer,chat}.md` are seeded on first run. Each run stores the prompts it started with.
+- Local context: `rsc run --context FILE` (up to 4 `.md`, `.txt` or `.pdf` files) and a Files chip on Home. The text is sent to the model and stored in `research.json`; reports cite it as `[local: name]`.
+- Chat deep-dive: a chat answer can propose up to 3 research angles; `Ctrl+T` runs them and writes a new report revision (`report.v<n>.md` keeps the previous one).
+- New `research.json` fields (`context`, `revision`, `followups`, `prompts`, `config.preset`); older binaries ignore them.
+
 ## 0.1.0
 
 - Citation checking: cited links are probed (`check_links`, on by default) and dead ones are flagged; cited URLs no agent opened are marked model-supplied; `[n]` numbers missing from the Sources list are recorded; opt-in `verify_citations` / `rsc run --verify` checks cited pages against the claims that cite them (`v` on the Sources tab).

@@ -1,3 +1,4 @@
+use super::prompts::Prompts;
 use crate::api::ApiError;
 use crate::config::StageModel;
 use crate::paths;
@@ -168,6 +169,9 @@ pub struct RunConfig {
     pub verify_citations: bool,
     #[serde(default)]
     pub gap_round: bool,
+    /// Preset the run started from; empty = none.
+    #[serde(default)]
+    pub preset: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -187,6 +191,9 @@ pub enum ChatRole {
 pub struct ChatMsg {
     pub role: ChatRole,
     pub text: String,
+    /// Research the assistant proposed in this answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub research: Vec<Perspective>,
 }
 
 /// `research/<id>/chat.json`: follow-up conversation about the final report.
@@ -195,6 +202,16 @@ pub struct ChatMsg {
 pub struct ChatLog {
     pub messages: Vec<ChatMsg>,
     pub usage: Usage,
+}
+
+/// A local file attached to a run; its text is part of the task brief.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LocalDoc {
+    pub name: String,
+    pub path: String,
+    pub text: String,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -239,6 +256,18 @@ pub struct Record {
     pub gaps_reviewed: bool,
     #[serde(default)]
     pub verify_usage: Usage,
+    /// Local files attached to the run.
+    #[serde(default)]
+    pub context: Vec<LocalDoc>,
+    /// Report revision; 0 or 1 = original. Earlier revisions are in `report.v<n>.md`.
+    #[serde(default)]
+    pub revision: u32,
+    /// Chat questions that started a deep-dive.
+    #[serde(default)]
+    pub followups: Vec<String>,
+    /// Prompts the run started with; resume and chat use these, not the files in `~/.rsc/prompts`.
+    #[serde(default)]
+    pub prompts: Prompts,
 }
 
 pub fn new_id() -> String {
@@ -274,6 +303,10 @@ impl Record {
             gap_notes: String::new(),
             gaps_reviewed: false,
             verify_usage: Usage::default(),
+            context: vec![],
+            revision: 0,
+            followups: vec![],
+            prompts: Prompts::default(),
         }
     }
 
@@ -509,6 +542,7 @@ mod tests {
             check_links: false,
             verify_citations: false,
             gap_round: false,
+            preset: String::new(),
         };
         let mut r = Record::new("q".into(), cfg);
         r.status = RunStatus::Researching;
@@ -637,7 +671,7 @@ mod tests {
         assert!(l.messages.is_empty());
         assert_eq!(l.usage.tokens(), 0);
         let l: ChatLog = serde_json::from_str(r#"{"messages":[{"role":"assistant","text":"x"}]}"#).unwrap();
-        assert_eq!(l.messages, vec![ChatMsg { role: ChatRole::Assistant, text: "x".into() }]);
+        assert_eq!(l.messages, vec![ChatMsg { role: ChatRole::Assistant, text: "x".into(), research: vec![] }]);
     }
 
     #[test]
@@ -646,5 +680,18 @@ mod tests {
         v["config"].as_object_mut().unwrap().remove("report_style");
         let r: Record = serde_json::from_value(v).unwrap();
         assert!(r.config.report_style.is_empty());
+    }
+
+    #[test]
+    fn record_without_phase3_fields_loads() {
+        let mut v = serde_json::to_value(rec(&[])).unwrap();
+        let o = v.as_object_mut().unwrap();
+        for k in ["context", "revision", "followups", "prompts"] {
+            assert!(o.remove(k).is_some(), "{k}");
+        }
+        assert!(v["config"].as_object_mut().unwrap().remove("preset").is_some());
+        let r: Record = serde_json::from_value(v).unwrap();
+        assert!(r.context.is_empty() && r.followups.is_empty());
+        assert_eq!((r.revision, r.config.preset.as_str()), (0, ""));
     }
 }
