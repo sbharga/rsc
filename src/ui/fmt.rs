@@ -56,6 +56,16 @@ pub fn pad(s: &str, width: usize) -> String {
     format!("{t}{}", " ".repeat(width.saturating_sub(w)))
 }
 
+/// `m:ss`, or `h:mm:ss` from one hour.
+pub fn elapsed(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    if s < 3600 {
+        format!("{}:{:02}", s / 60, s % 60)
+    } else {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    }
+}
+
 /// Greedy word wrap by display width.
 pub fn wrap(s: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
@@ -110,5 +120,13 @@ mod tests {
         assert_eq!(trunc("hello world", 6), "hello…");
         assert_eq!(trunc("hi", 6), "hi");
         assert_eq!(pad("ab", 4), "ab  ");
+    }
+
+    #[test]
+    fn elapsed_formats() {
+        let e = |s| elapsed(std::time::Duration::from_secs(s));
+        assert_eq!(e(0), "0:00");
+        assert_eq!(e(75), "1:15");
+        assert_eq!(e(3725), "1:02:05");
     }
 }

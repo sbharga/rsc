@@ -513,3 +513,45 @@ async fn custom_prompt_is_used_and_recorded() {
     assert_eq!(env.record().1["prompts"]["synthesizer"], "Several researchers CUSTOM-SYNTH");
     assert!(dir.join("planner.md").exists());
 }
+
+fn instructions_with_discovery(env: &Env) -> Vec<(Kind, bool)> {
+    let mut kinds = vec![Kind::Planner, Kind::Gaps, Kind::Synth];
+    kinds.extend(["A", "B"].map(|t| Kind::Researcher(t.into())));
+    kinds
+        .into_iter()
+        .flat_map(|k| {
+            let bodies = env.mock.bodies(&k);
+            assert!(!bodies.is_empty(), "no {k:?} request");
+            bodies
+                .into_iter()
+                .map(move |b| (k.clone(), b["instructions"].as_str().unwrap().contains("Discovery mode:")))
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discover_mode_reaches_every_stage() {
+    let cfg = format!("{BASE}gap_round = true\n");
+
+    let env = Env::new(&cfg, |r| normal(r, &["A", "B"])).await;
+    let o = run(&env, &["run", "q", "--yes", "--discover", "--json"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let j: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(j["config"]["mode"], "discover");
+    let seen = instructions_with_discovery(&env);
+    assert!(seen.iter().all(|(_, d)| *d), "{seen:?}");
+
+    let env = Env::new(&cfg, |r| normal(r, &["A", "B"])).await;
+    let o = run(&env, &["run", "q", "--yes", "--json"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let j: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(j["config"]["mode"], "research");
+    let seen = instructions_with_discovery(&env);
+    assert!(seen.iter().all(|(_, d)| !*d), "{seen:?}");
+
+    let env = Env::new(&format!("{cfg}mode = \"discover\"\n"), |r| normal(r, &["A", "B"])).await;
+    let o = run(&env, &["run", "q", "--yes", "--json"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let j: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(j["config"]["mode"], "discover");
+}

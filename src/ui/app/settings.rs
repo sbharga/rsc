@@ -78,6 +78,11 @@ impl App {
                     self.cfg.gap_round = !self.cfg.gap_round;
                     self.save_cfg();
                 }
+                Row::Mode => {
+                    self.cfg.mode = self.cfg.mode.toggled();
+                    self.home.mode = self.cfg.mode;
+                    self.save_cfg();
+                }
                 Row::CheckUpdates => {
                     self.cfg.check_updates = !self.cfg.check_updates;
                     self.save_cfg();

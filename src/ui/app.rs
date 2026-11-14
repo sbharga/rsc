@@ -15,7 +15,7 @@ use crate::auth::{self, Account, AuthError, AuthHandle, SignInUi, USAGE_URL};
 use crate::config::{Config, StageModel, resolve_model};
 use crate::pricing::Pricing;
 use crate::research::chat::Chat;
-use crate::research::store::{ChatRole, LocalDoc, Perspective, Record, RunStatus, Source, Support};
+use crate::research::store::{ChatRole, LocalDoc, Perspective, Record, RunMode, RunStatus, Source, Support};
 use crate::research::{self, Ctx, Run, RunEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
@@ -202,6 +202,8 @@ pub struct Home {
     pub preset: Option<String>,
     /// Files attached with the Files chip.
     pub context: Vec<LocalDoc>,
+    /// Mode chosen with the Mode chip; the run starts in it.
+    pub mode: RunMode,
 }
 
 pub struct ViewTab {
@@ -257,6 +259,7 @@ pub enum Row {
     Account,
     Usage,
     Model(Stage),
+    Mode,
     Num(Num),
     FetchUrl,
     CheckLinks,
@@ -266,13 +269,14 @@ pub enum Row {
     ReportStyle,
 }
 
-pub const ROWS: [Row; 15] = [
+pub const ROWS: [Row; 16] = [
     Row::Account,
     Row::Usage,
     Row::Model(Stage::Planner),
     Row::Model(Stage::Researcher),
     Row::Model(Stage::Compactor),
     Row::Model(Stage::Synthesizer),
+    Row::Mode,
     Row::Num(Num::DefaultAgents),
     Row::Num(Num::MaxParallel),
     Row::Num(Num::ReportWords),
@@ -462,6 +466,7 @@ impl App {
             synthesizer: cfg.synthesizer.clone(),
             preset: None,
             context: vec![],
+            mode: cfg.mode,
         };
         let mut app = App {
             cfg,
@@ -846,6 +851,7 @@ impl App {
             p.apply(&mut rc);
             rc.preset = name;
         }
+        rc.mode = self.home.mode;
         let context = std::mem::take(&mut self.home.context);
         self.run = Some(Run::start(ctx, q, rc, context, true));
         self.home.input.select_all();

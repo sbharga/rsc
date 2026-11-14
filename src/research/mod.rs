@@ -17,7 +17,8 @@ use crate::pricing::{Pricing, Usage};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use store::{AgentRec, AgentStatus, ErrRec, LocalDoc, Perspective, Record, RunConfig, RunStatus};
+use std::time::{Duration, Instant};
+use store::{AgentRec, AgentStatus, ErrRec, LocalDoc, Perspective, Record, RunConfig, RunMode, RunStatus};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -80,9 +81,21 @@ pub struct RunState {
     /// Live timelines (memory only; a resumed run starts empty).
     pub planner_log: Vec<LogEntry>,
     pub logs: Vec<Vec<LogEntry>>,
+    /// What the run is doing outside per-agent activity (gap review, synthesis phases, citation checks); empty = the status says enough.
+    pub step: String,
+    /// Status the clock below belongs to, and when it was first seen.
+    stage: (RunStatus, Instant),
 }
 
 impl RunState {
+    /// Time in the current status; the clock restarts the first time a new status is observed.
+    pub fn stage_elapsed(&mut self) -> Duration {
+        if self.stage.0 != self.record.status {
+            self.stage = (self.record.status, Instant::now());
+        }
+        self.stage.1.elapsed()
+    }
+
     fn log_for(&mut self, t: &Target) -> Option<&mut Vec<LogEntry>> {
         match t {
             Target::Planner => Some(&mut self.planner_log),
@@ -182,12 +195,15 @@ fn style_suffix(style: &str) -> String {
 impl Run {
     fn new(ctx: Ctx, record: Record) -> Arc<Run> {
         let n = record.agents.len();
+        let status = record.status;
         let fetch = record.config.fetch_url;
         Arc::new(Run {
             ctx,
             http: tools::fetch_http(),
             state: Mutex::new(RunState {
                 record,
+                step: String::new(),
+                stage: (status, Instant::now()),
                 activity: vec![String::new(); n],
                 planner_log: vec![],
                 logs: vec![vec![]; n],
@@ -331,6 +347,11 @@ impl Run {
             self.persist();
             self.notify(RunEvent::Toast("Run budget reached — finishing with the research so far".into()));
         }
+    }
+
+    fn set_step(&self, text: impl Into<String>) {
+        let t = text.into();
+        self.with(|s| s.step = t);
     }
 
     fn set_activity(&self, idx: usize, text: impl Into<String>) {
@@ -483,8 +504,16 @@ impl Run {
         tokio::spawn(async move {
             while let Some(d) = rx.recv().await {
                 match (&target, d) {
-                    (Target::Synth, StreamDelta::Text(t)) => run.with(|s| s.synth_text.push_str(&t)),
-                    (Target::Synth, StreamDelta::Restart) => run.with(|s| s.synth_text.clear()),
+                    (Target::Synth, StreamDelta::Text(t)) => run.with(|s| {
+                        if s.synth_text.is_empty() {
+                            s.step = "writing report".into();
+                        }
+                        s.synth_text.push_str(&t)
+                    }),
+                    (Target::Synth, StreamDelta::Restart) => run.with(|s| {
+                        s.synth_text.clear();
+                        s.step = "connection dropped — retrying".into();
+                    }),
                     (Target::Synth, _) => {}
                     (t, StreamDelta::Reasoning(d)) => run.log(t, LogEntry::Thinking(d), true),
                     (t, StreamDelta::ReasoningBreak) => run.log(t, LogEntry::Thinking(String::new()), false),

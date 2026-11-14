@@ -118,6 +118,7 @@ impl Run {
 
     pub(super) async fn drive(self: Arc<Self>, run_agents: Vec<usize>) {
         self.with(|s| s.record.status = RunStatus::Researching);
+        self.set_step("");
         self.persist();
         let sem = Arc::new(Semaphore::new(self.with(|s| s.record.config.max_parallel.max(1)) as usize));
         let mut set = tokio::task::JoinSet::new();
@@ -225,8 +226,9 @@ impl Run {
         let mut req = ResponseRequest {
             model: sm.model.clone(),
             instructions: format!(
-                "{}{UNTRUSTED_NOTE}",
-                prompts::fill(&template, &[("title", &p.title), ("brief", &p.brief), ("length", &length)])
+                "{}{}{UNTRUSTED_NOTE}",
+                prompts::fill(&template, &[("title", &p.title), ("brief", &p.brief), ("length", &length)]),
+                prompts::discover(cfg.mode, prompts::DISCOVER_RESEARCHER)
             ),
             input: vec![user_msg(&brief)],
             tools: vec![],

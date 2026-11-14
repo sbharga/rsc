@@ -191,7 +191,7 @@ impl Chat {
 mod tests {
     use super::*;
     use crate::config::StageModel;
-    use crate::research::store::RunConfig;
+    use crate::research::store::{RunConfig, RunMode};
 
     #[test]
     fn request_carries_report_history_and_style() {
@@ -215,6 +215,7 @@ mod tests {
             verify_citations: false,
             gap_round: false,
             preset: String::new(),
+            mode: RunMode::Research,
         };
         let rec = Record::new("Q".into(), cfg);
         let hist = [

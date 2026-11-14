@@ -226,7 +226,7 @@ pub async fn pdf(rec: &Record, report: &str, out: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::config::StageModel;
-    use crate::research::store::{RunConfig, Source};
+    use crate::research::store::{RunConfig, RunMode, Source};
 
     fn rec(question: &str) -> Record {
         let sm = StageModel { model: "m".into(), effort: "low".into() };
@@ -249,6 +249,7 @@ mod tests {
             verify_citations: false,
             gap_round: false,
             preset: String::new(),
+            mode: RunMode::Research,
         };
         let mut r = Record::new(question.into(), cfg);
         let src = |url: &str, in_final| Source {

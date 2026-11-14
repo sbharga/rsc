@@ -32,7 +32,7 @@ impl App {
         }
         match k.code {
             KeyCode::Left => self.home.chip = self.home.chip.saturating_sub(1),
-            KeyCode::Right => self.home.chip = (self.home.chip + 1).min(5),
+            KeyCode::Right => self.home.chip = (self.home.chip + 1).min(6),
             KeyCode::Esc => self.home.chips = false,
             KeyCode::Char('+') | KeyCode::Char('=') if self.home.chip == 0 => {
                 self.home.agents = (self.home.agents + 1).min(MAX_AGENTS)
@@ -60,6 +60,7 @@ impl App {
                     self.picker_preselect();
                 }
                 4 => self.cycle_preset(),
+                6 => self.home.mode = self.home.mode.toggled(),
                 5 if k.code == KeyCode::Enter => {
                     let ta = single_line_ta(&format!("{}/", self.cwd.display()));
                     self.modal = Modal::Attach(Box::new(PathInput { ta, err: None }));

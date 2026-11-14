@@ -11,8 +11,8 @@ const HIER_THRESHOLD: usize = 8;
 const GROUP_SIZE: usize = 6;
 const GROUP_INSTRUCTIONS: &str = "Merge these researcher reports into one detailed intermediate summary for a writer who will combine it with summaries of other report groups. Keep every finding, figure, date, disagreement and open question; drop repetition. Cite sources by their number from the Sources list in square brackets, e.g. [3], keeping the numbers exactly; cite a source that is not on the list as a Markdown link [title](url). Do not add a sources section.";
 
-fn synth_instructions(template: &str, style: &str) -> String {
-    format!("{template}{}", style_suffix(style))
+fn synth_instructions(template: &str, style: &str, mode: RunMode) -> String {
+    format!("{template}{}{}", prompts::discover(mode, prompts::DISCOVER_SYNTH), style_suffix(style))
 }
 
 impl Run {
@@ -130,6 +130,7 @@ impl Run {
                 done,
             )
         });
+        self.set_step("preparing reports");
         let budget = cfg.synth_input_budget_tokens;
         let groups = synth_groups(&done);
         let body = if groups.len() == 1 {
@@ -141,6 +142,7 @@ impl Run {
             let mut jobs = vec![];
             for (g, group) in groups.iter().enumerate() {
                 let run = self.clone();
+                let mode = cfg.mode;
                 let (agents, mem, brief, sm) = (agents.clone(), mem_reports.clone(), brief.clone(), sm.clone());
                 let glist = sources::render_list(&srcs, |x| x.agents.iter().any(|a| group.contains(a)));
                 jobs.push(async move {
@@ -151,8 +153,9 @@ impl Run {
                     let req = ResponseRequest {
                         model: sm.model,
                         instructions: format!(
-                            "{GROUP_INSTRUCTIONS} Write at most about {} words.",
-                            group_budget * 3 / 4
+                            "{GROUP_INSTRUCTIONS} Write at most about {} words.{}",
+                            group_budget * 3 / 4,
+                            prompts::discover(mode, prompts::DISCOVER_GROUP)
                         ),
                         input: vec![user_msg(&format!("Problem:\n{brief}\n\n{parts}## Sources\n{glist}"))],
                         tools: vec![],
@@ -174,6 +177,7 @@ impl Run {
                     Ok::<_, ApiError>(format!("## Group {} summary (reports {nums})\n{out}\n\n", g + 1))
                 });
             }
+            self.set_step(format!("merging {} report groups", groups.len()));
             let summaries = futures_util::future::join_all(jobs).await.into_iter().collect::<Result<Vec<_>, _>>()?;
             let failed: Vec<usize> = (0..agents.len()).filter(|i| !done.contains(i)).collect();
             let failed_parts = self.report_parts(&failed, &agents, &mem_reports, 0).await?;
@@ -185,7 +189,7 @@ impl Run {
         let sm = &cfg.synthesizer;
         let req = ResponseRequest {
             model: sm.model.clone(),
-            instructions: synth_instructions(&template, &cfg.report_style),
+            instructions: synth_instructions(&template, &cfg.report_style, cfg.mode),
             input: vec![user_msg(&input)],
             tools: vec![tools::web_search_tool()],
             effort: Some(sm.effort.clone()),
@@ -193,6 +197,7 @@ impl Run {
             context_management: None,
             reasoning_summary: false,
         };
+        self.set_step("writing report");
         let tx = self.forwarder(Target::Synth);
         self.with(|s| s.synth_text.clear());
         let done = self.call(&req, Some(&tx)).await?;
@@ -238,9 +243,11 @@ mod tests {
 
     #[test]
     fn synth_instructions_append_style() {
-        assert_eq!(synth_instructions(prompts::SYNTHESIZER, "  "), prompts::SYNTHESIZER);
-        let s = synth_instructions(prompts::SYNTHESIZER, "Explain like I'm 5");
+        assert_eq!(synth_instructions(prompts::SYNTHESIZER, "  ", RunMode::Research), prompts::SYNTHESIZER);
+        let s = synth_instructions(prompts::SYNTHESIZER, "Explain like I'm 5", RunMode::Research);
         assert!(s.starts_with(prompts::SYNTHESIZER) && s.ends_with("Explain like I'm 5"));
+        let d = synth_instructions(prompts::SYNTHESIZER, "Explain like I'm 5", RunMode::Discover);
+        assert!(d.contains(prompts::DISCOVER_SYNTH) && d.ends_with("Explain like I'm 5"));
     }
 
     #[test]

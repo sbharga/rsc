@@ -2,6 +2,7 @@
 //!
 //! A run stores the prompts it started with, so editing a file never changes a run in progress or its resume.
 
+use super::store::RunMode;
 use crate::paths;
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,26 @@ pub const RESEARCHER: &str = "You are one of several researchers working indepen
 pub const SYNTHESIZER: &str = "Several researchers investigated the problem below from different angles. Combine their reports into one final answer in Markdown: integrate findings and resolve or flag conflicts. Cite sources by their number from the Sources list in square brackets, e.g. [3] or [2, 5]. If you use a source that is not on the list, cite it as a Markdown link [title](url). Do not write your own sources or references section; one is added automatically. You may search the web to verify key claims.";
 
 pub const CHAT: &str = "You wrote the research report below for the user. Answer their follow-up questions about it in Markdown. Base answers on the report and its sources; search the web when a question needs information the report does not cover or to check a claim. Cite sources from the report's Sources list by number in square brackets, e.g. [3]; cite any new source as a Markdown link [title](url). Say so when the report and sources do not support an answer.";
+
+// Discover mode adds these to the stage prompts; they are built in, not editable, and each starts with "Discovery mode:".
+pub const DISCOVER_PLANNER: &str = "Discovery mode: the user wants new perspectives and new ways of doing things, not only a summary of what is already known. Give at least half of the perspectives an exploratory angle: an adjacent field that solved an analogous problem, a contrarian or minority view, an assumption the standard approach takes for granted, a recent or fringe development, or a combination of ideas that has not been tried. Each exploratory brief names the field, assumption or idea to explore and what a useful discovery would look like. Keep the remaining perspectives on establishing the current state of the art so new ideas can be judged against it.";
+
+pub const DISCOVER_RESEARCHER: &str = "Discovery mode: go beyond restating the consensus. Look for non-obvious insights, ideas that transfer from other fields, anomalies the mainstream view does not explain, and approaches that are untried or under-used. End your report with a `## New ideas` section: for each idea, what it is, the evidence behind it with sources, how speculative it is, and how it could be tested. Mark ideas you inferred yourself as your own inference.";
+
+pub const DISCOVER_GAPS: &str = "Discovery mode: also count as gaps the promising new ideas in the reports that no one has examined further, and propose researchers to test, challenge or extend the most promising of them.";
+
+pub const DISCOVER_GROUP: &str =
+    "Discovery mode: keep every item from the reports' New ideas sections with its evidence and how speculative it is.";
+
+pub const DISCOVER_SYNTH: &str = "Discovery mode: the user wants new perspectives and new ways of doing things, not only a summary. After answering the question, add a `## New perspectives and ideas` section with the most promising non-obvious ideas from the reports and from combining them. For each: why it might work, the supporting evidence with citations, how speculative it is (established, plausible or speculative), and a concrete first step to test it. Mark ideas that come from your own reasoning rather than a source as such.";
+
+/// `text` as an instruction suffix in discover mode; empty in research mode.
+pub fn discover(mode: RunMode, text: &str) -> String {
+    match mode {
+        RunMode::Discover => format!("\n\n{text}"),
+        RunMode::Research => String::new(),
+    }
+}
 
 const FILES: [(&str, &str); 4] =
     [("planner.md", PLANNER), ("researcher.md", RESEARCHER), ("synthesizer.md", SYNTHESIZER), ("chat.md", CHAT)];

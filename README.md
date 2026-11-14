@@ -88,7 +88,7 @@ Global keys:
 ## Headless use
 
 ```sh
-rsc run "<question>" [--agents N|auto] [--preset NAME] [--context FILE]... [--verify] [--yes] [--no-clarify] [-o FILE] [--json]
+rsc run "<question>" [--agents N|auto] [--preset NAME] [--context FILE]... [--verify] [--discover] [--yes] [--no-clarify] [-o FILE] [--json]
 rsc resume <id> [--yes] [--no-clarify] [-o FILE] [--json]
 rsc ls
 rsc show <id>
@@ -155,6 +155,7 @@ Everything lives under `~/.rsc` (`%USERPROFILE%\.rsc` on Windows; directories 07
 | `check_links` | `true` | Probe cited URLs and flag dead ones |
 | `verify_citations` | `false` | Check each cited page against the claims that cite it (extra model calls) |
 | `gap_round` | `false` | After the first round, a reviewer may propose follow-up researchers for you to approve |
+| `mode` | `"research"` | `"discover"` also hunts for new perspectives and untried approaches: some angles are exploratory, reports end with new ideas, and the final report adds a `## New perspectives and ideas` section. Home Mode chip, Settings, `rsc run --discover` |
 | `check_updates` | `true` | Check GitHub for a newer release on launch |
 | `presets` | `quick`, `standard`, `deep` | `[presets.<name>]` tables, see below |
 

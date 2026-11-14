@@ -2,7 +2,7 @@ use super::app::*;
 use super::fmt::{self, SPINNER, one_line, pad, trunc};
 use crate::config::MAX_AGENTS;
 use crate::research::LogEntry;
-use crate::research::store::{AgentRec, AgentStatus, LinkStatus, RunStatus, Support, progress};
+use crate::research::store::{AgentRec, AgentStatus, LinkStatus, RunMode, RunStatus, Support, progress};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -73,6 +73,11 @@ struct RunView {
     followup: bool,
     /// Attached files: name, chars, truncated.
     context: Vec<(String, usize, bool)>,
+    /// What the run is doing outside per-agent activity; empty = the status says enough.
+    step: String,
+    /// Time in the current status.
+    elapsed: std::time::Duration,
+    discover: bool,
 }
 
 fn run_view(app: &App) -> Option<RunView> {
@@ -80,6 +85,7 @@ fn run_view(app: &App) -> Option<RunView> {
     Some(run.with(|s| {
         let tail_start = s.synth_text.len().saturating_sub(4000);
         let tail_start = (tail_start..=s.synth_text.len()).find(|i| s.synth_text.is_char_boundary(*i)).unwrap_or(0);
+        let elapsed = s.stage_elapsed();
         RunView {
             question: s.record.question.clone(),
             status: s.record.status,
@@ -105,6 +111,9 @@ fn run_view(app: &App) -> Option<RunView> {
             gap_notes: s.record.gap_notes.clone(),
             followup: s.record.agents.iter().any(|a| a.followup),
             context: s.record.context.iter().map(|d| (d.name.clone(), d.text.chars().count(), d.truncated)).collect(),
+            step: s.step.clone(),
+            elapsed,
+            discover: s.record.config.mode == RunMode::Discover,
         }
     }))
 }
@@ -145,7 +154,8 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             && let Some(rv) = run_view(app)
             && rv.status.is_live()
         {
-            right.push_str(&format!("● {} {}%   ", rv.status.label(), (rv.progress * 100.0).round() as u32));
+            let spin = SPINNER[app.tick % SPINNER.len()];
+            right.push_str(&format!("{spin} {} {}%   ", rv.status.label(), (rv.progress * 100.0).round() as u32));
         }
         if app.screen != Screen::SignIn
             && let Some(a) = &app.account
@@ -299,6 +309,7 @@ fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
     let mut spans2: Vec<Span> = vec![];
     spans2.extend(chip("Preset", h.preset.clone().unwrap_or_else(|| "none".into()), sel(4)));
     spans2.extend(chip("Files", files, sel(5)));
+    spans2.extend(chip("Mode", h.mode.label().to_string(), sel(6)));
     let chips2_full = Rect::new(area.x, chips2.y, area.width, 1);
     f.render_widget(Paragraph::new(Line::from(spans2)).alignment(Alignment::Center), chips2_full);
 
@@ -322,7 +333,8 @@ fn draw_home(f: &mut Frame, app: &mut App, area: Rect) {
         let pct = (rv.progress * 100.0).round() as u32;
         let status = match rv.status {
             RunStatus::Planning | RunStatus::Researching | RunStatus::Synthesizing => {
-                Some((format!("● {} · {pct}% — Ctrl+G to view", capitalize(rv.status.label())), accent()))
+                let spin = SPINNER[app.tick % SPINNER.len()];
+                Some((format!("{spin} {} · {pct}% — Ctrl+G to view", capitalize(rv.status.label())), accent()))
             }
             RunStatus::Clarifying => Some(("● Planner has questions — Ctrl+G to answer".to_string(), accent())),
             RunStatus::Review => Some(("● Angles ready — Ctrl+G to review".to_string(), accent())),
@@ -359,6 +371,10 @@ fn draw_review(f: &mut Frame, app: &mut App, area: Rect) {
                 let cut = if *truncated { " (truncated)" } else { "" };
                 lines.push(Line::from(format!("  {name} · {chars} chars{cut}")));
             }
+            lines.push(Line::raw(""));
+        }
+        if rv.discover {
+            lines.push(Line::from(Span::styled("Discover mode: some angles are exploratory", accent())));
             lines.push(Line::raw(""));
         }
         if !rv.understanding.is_empty() {
@@ -469,17 +485,17 @@ fn draw_run(f: &mut Frame, app: &mut App, area: Rect) {
     let pct = (rv.progress * 100.0).round() as u32;
     let done = rv.agents.iter().filter(|a| a.status == AgentStatus::Done).count();
     let mut label = match rv.status {
-        RunStatus::Planning => format!("Planning · {pct}%"),
-        RunStatus::Researching
-            if rv.gap_round
-                && rv.agents.iter().all(|a| matches!(a.status, AgentStatus::Done | AgentStatus::Failed)) =>
-        {
-            format!("Reviewing gaps · {pct}%")
-        }
-        RunStatus::Researching => format!("Researching · {done}/{} done · {pct}%", rv.agents.len()),
-        RunStatus::Synthesizing => format!("Synthesizing · {pct}%"),
-        s => format!("{} · {pct}%", s.label()),
+        RunStatus::Planning => "Planning".to_string(),
+        RunStatus::Researching if !rv.step.is_empty() => capitalize(&rv.step),
+        RunStatus::Researching => format!("Researching · {done}/{} done", rv.agents.len()),
+        RunStatus::Synthesizing if !rv.step.is_empty() => format!("Synthesizing · {}", rv.step),
+        RunStatus::Synthesizing => "Synthesizing".to_string(),
+        s => s.label().to_string(),
     };
+    label.push_str(&format!(" · {pct}%"));
+    if rv.status.is_live() {
+        label = format!("{} {label} · {}", SPINNER[app.tick % SPINNER.len()], fmt::elapsed(rv.elapsed));
+    }
     if rv.budget_hit {
         label.push_str(" · budget reached");
     }
@@ -528,7 +544,11 @@ fn draw_run(f: &mut Frame, app: &mut App, area: Rect) {
             Rect::new(synth.x, synth.y, synth.width, 1),
         );
         let body = Rect::new(synth.x, synth.y + 1, synth.width, h);
-        f.render_widget(p.scroll((lines.saturating_sub(h as usize) as u16, 0)), body);
+        if rv.synth_tail.is_empty() {
+            f.render_widget(Paragraph::new(Span::styled("The report appears here as it is written.", muted())), body);
+        } else {
+            f.render_widget(p.scroll((lines.saturating_sub(h as usize) as u16, 0)), body);
+        }
     }
 
     if err_h > 0 {
@@ -744,6 +764,9 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
             Row::Model(st) => {
                 let sm = app.current_stage(PickScope::Settings, *st);
                 (st.label().into(), format!("{}·{}", app.display_name(&sm.model), sm.effort), "")
+            }
+            Row::Mode => {
+                ("Default mode".into(), app.cfg.mode.label().into(), "discover looks for new angles and ideas")
             }
             Row::Num(Num::DefaultAgents) => {
                 let v = app.cfg.default_agents;
@@ -1018,6 +1041,7 @@ fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Enter (Preset)", "cycle presets"),
             ("Enter (Files)", "attach a .md, .txt or .pdf"),
             ("x (Files)", "remove attached files"),
+            ("Enter (Mode)", "switch research / discover"),
             ("+/-", "agents"),
             ("m", "manage usage"),
             ("r", "retry loading models"),

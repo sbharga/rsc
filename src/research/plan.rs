@@ -72,7 +72,7 @@ fn parse_plan(text: &str, force: bool, max: usize) -> Option<PlanReply> {
 }
 
 /// Planner system prompt. `n` researchers exactly, or `0` = the planner chooses within the auto bounds.
-fn planner_instructions(template: &str, n: u8, force: bool) -> String {
+fn planner_instructions(template: &str, n: u8, force: bool, mode: RunMode) -> String {
     let (team, step3) = if n > 0 {
         (
             format!("a team of {n} independent researchers"),
@@ -89,6 +89,7 @@ fn planner_instructions(template: &str, n: u8, force: bool) -> String {
         )
     };
     let mut s = prompts::fill(template, &[("team", &team), ("step3", &step3)]);
+    s.push_str(&prompts::discover(mode, prompts::DISCOVER_PLANNER));
     if force {
         s.push_str("\n\nDo not ask any more questions: `questions` must be empty and you must return the perspectives now, making reasonable assumptions where needed.");
     }
@@ -168,6 +169,7 @@ impl Run {
     // ---- planner ----
 
     pub(super) async fn plan_task(self: Arc<Self>, force: bool) {
+        self.set_step("");
         self.with(|s| s.record.error = None);
         self.note(Target::Planner, "planning");
         self.set_status(RunStatus::Planning);
@@ -213,13 +215,14 @@ impl Run {
     }
 
     async fn plan(self: &Arc<Self>, force: bool) -> Result<PlanOutcome, ApiError> {
-        let (input, n, sm, rounds, template) = self.with(|s| {
+        let (input, n, sm, rounds, template, mode) = self.with(|s| {
             (
                 planner_input(&s.record),
                 s.record.config.agents,
                 s.record.config.planner.clone(),
                 s.record.clarify_rounds,
                 s.record.prompts.planner().to_string(),
+                s.record.config.mode,
             )
         });
         let force = force || rounds >= MAX_CLARIFY_ROUNDS;
@@ -234,7 +237,7 @@ impl Run {
                     "properties":{"title":{"type":"string"},"brief":{"type":"string"}},
                     "required":["title","brief"],"additionalProperties":false}}},
             "required":["understanding","notes","questions","perspectives"],"additionalProperties":false}});
-        let instructions = planner_instructions(&template, n, force);
+        let instructions = planner_instructions(&template, n, force, mode);
         let max = if n == 0 { AUTO_MAX_AGENTS } else { MAX_AGENTS } as usize;
         let req = ResponseRequest {
             model: sm.model.clone(),
@@ -286,9 +289,9 @@ mod tests {
 
     #[test]
     fn planner_instructions_auto_vs_pinned() {
-        let pinned = planner_instructions(prompts::PLANNER, 3, false);
+        let pinned = planner_instructions(prompts::PLANNER, 3, false, RunMode::Research);
         assert!(pinned.contains("exactly 3 `perspectives`"));
-        let auto = planner_instructions(prompts::PLANNER, 0, true);
+        let auto = planner_instructions(prompts::PLANNER, 0, true, RunMode::Research);
         assert!(auto.contains("between 2 and 8") && !auto.contains("return exactly"));
         assert!(auto.contains("Do not ask any more questions"));
     }

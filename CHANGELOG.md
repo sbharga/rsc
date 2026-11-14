@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+- Discover mode (`mode = "discover"`, Mode chip on Home, Default mode in Settings, `rsc run --discover`): the planner adds exploratory angles, researchers report new ideas, and the final report adds a `## New perspectives and ideas` section. Stored per run, so resume and chat deep-dive keep it.
+- Run screen shows it is alive during quiet phases: an animated spinner and elapsed time for the current stage, plus a step label for gap review, report merging, writing the report and link/citation checks (with counts). The synthesis panel shows a placeholder until text arrives.
+- Fixed "Couldn't save research: rename to …" toasts when several agents saved at once: file writes shared one temporary file name, now unique per write.
+
 ## 0.3.1
 
 - Colored CLI output: errors print as `error:`, warnings as `warning:`, status, agent progress, prompts and `rsc ls` are colored. Color is off when output isn't a terminal or `NO_COLOR` is set.

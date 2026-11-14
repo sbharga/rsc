@@ -52,7 +52,9 @@ impl Run {
         if !(check_links || verify) || cited.is_empty() {
             return Ok(());
         }
-        self.notify(RunEvent::Toast("Checking cited links".into()));
+        let total = cited.len();
+        let mut checked = 0;
+        self.set_step(format!("checking cited links 0/{total}"));
         let http = &self.http;
         let mut probes = futures_util::stream::iter(cited)
             .map(move |(i, u)| async move { (i, tools::probe(http, &u).await) })
@@ -61,7 +63,11 @@ impl Run {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Err(ApiError::cancelled()),
                 r = probes.next() => match r {
-                    Some((i, st)) => self.with(|s| s.record.sources[i].status = st),
+                    Some((i, st)) => {
+                        self.with(|s| s.record.sources[i].status = st);
+                        checked += 1;
+                        self.set_step(format!("checking cited links {checked}/{total}"));
+                    }
                     None => break,
                 },
             }
@@ -86,6 +92,9 @@ impl Run {
                 .take(VERIFY_MAX_SOURCES)
                 .collect()
         });
+        let total = targets.len();
+        let mut checked = 0;
+        self.set_step(format!("verifying citations 0/{total}"));
         let run: &Run = self;
         let mut checks = futures_util::stream::iter(targets)
             .map(move |(i, u, c)| async move { (i, run.verify_one(&u, &c).await) })
@@ -97,8 +106,15 @@ impl Run {
             };
             match r {
                 None => break,
-                Some((i, Ok(Some(v)))) => self.with(|s| s.record.sources[i].verdicts = v),
-                Some((_, Ok(None))) => {}
+                Some((i, Ok(Some(v)))) => {
+                    self.with(|s| s.record.sources[i].verdicts = v);
+                    checked += 1;
+                    self.set_step(format!("verifying citations {checked}/{total}"));
+                }
+                Some((_, Ok(None))) => {
+                    checked += 1;
+                    self.set_step(format!("verifying citations {checked}/{total}"));
+                }
                 Some((_, Err(e))) if e.kind == ErrKind::Cancelled => return Err(e),
                 Some((_, Err(e))) => {
                     self.notify(RunEvent::Toast(format!("Citation check stopped: {}", e.message)));

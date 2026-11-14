@@ -4,9 +4,10 @@ use super::*;
 
 const MAX_GAP_AGENTS: usize = 4;
 
-fn gap_instructions() -> String {
+fn gap_instructions(mode: RunMode) -> String {
     format!(
-        "You review the first round of a multi-researcher investigation before the final report is written. Read the problem and the researchers' reports. In `notes`, list as a short Markdown list the important sub-questions the reports leave unanswered and the contradictions between them that matter for the user's question. In `gaps`, propose up to {MAX_GAP_AGENTS} follow-up researchers, each with a short title and a 2–3 sentence self-contained brief: what to find out, what the first round already established, and which gap or contradiction it resolves. Return an empty `gaps` list if the reports already answer the question well; never propose work that repeats the first round."
+        "You review the first round of a multi-researcher investigation before the final report is written. Read the problem and the researchers' reports. In `notes`, list as a short Markdown list the important sub-questions the reports leave unanswered and the contradictions between them that matter for the user's question. In `gaps`, propose up to {MAX_GAP_AGENTS} follow-up researchers, each with a short title and a 2–3 sentence self-contained brief: what to find out, what the first round already established, and which gap or contradiction it resolves. Return an empty `gaps` list if the reports already answer the question well; never propose work that repeats the first round.{}",
+        prompts::discover(mode, prompts::DISCOVER_GAPS)
     )
 }
 
@@ -51,13 +52,15 @@ fn add_followups(s: &mut RunState, ps: &[Perspective]) -> Vec<usize> {
 
 impl Run {
     async fn review_gaps(self: &Arc<Self>) -> Result<(), ApiError> {
-        let (brief, sm, agents, reports, budget) = self.with(|s| {
+        self.set_step("reviewing gaps");
+        let (brief, sm, agents, reports, budget, mode) = self.with(|s| {
             (
                 task_brief(&s.record),
                 s.record.config.planner.clone(),
                 s.record.agents.clone(),
                 s.reports.clone(),
                 s.record.config.synth_input_budget_tokens,
+                s.record.config.mode,
             )
         });
         let done = agents.iter().filter(|a| a.status == AgentStatus::Done).count().max(1) as u64;
@@ -83,7 +86,7 @@ impl Run {
             "required":["notes","gaps"],"additionalProperties":false}});
         let req = ResponseRequest {
             model: sm.model,
-            instructions: gap_instructions(),
+            instructions: gap_instructions(mode),
             input: vec![user_msg(&input)],
             tools: vec![],
             effort: Some(sm.effort),

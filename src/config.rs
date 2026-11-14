@@ -1,5 +1,5 @@
 use crate::paths;
-use crate::research::store::RunConfig;
+use crate::research::store::{RunConfig, RunMode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -50,6 +50,8 @@ pub struct Config {
     pub verify_citations: bool,
     /// Let a reviewer propose follow-up researchers after the first round.
     pub gap_round: bool,
+    /// Mode the Home Mode chip starts in and `rsc run` uses without --discover.
+    pub mode: RunMode,
     /// Named run profiles, `[presets.<name>]`.
     pub presets: std::collections::BTreeMap<String, Preset>,
 }
@@ -134,6 +136,7 @@ impl Default for Config {
             check_links: true,
             verify_citations: false,
             gap_round: false,
+            mode: RunMode::Research,
             presets: default_presets(),
         }
     }
@@ -193,6 +196,7 @@ impl Config {
             check_links: self.check_links,
             verify_citations: self.verify_citations,
             gap_round: self.gap_round,
+            mode: self.mode,
         }
     }
 

@@ -141,6 +141,31 @@ impl From<&ApiError> for ErrRec {
     }
 }
 
+/// `Research` answers the question; `Discover` also hunts for new perspectives and untried approaches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunMode {
+    #[default]
+    Research,
+    Discover,
+}
+
+impl RunMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            RunMode::Research => "research",
+            RunMode::Discover => "discover",
+        }
+    }
+
+    pub fn toggled(self) -> RunMode {
+        match self {
+            RunMode::Research => RunMode::Discover,
+            RunMode::Discover => RunMode::Research,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RunConfig {
     pub planner: StageModel,
@@ -172,6 +197,8 @@ pub struct RunConfig {
     /// Preset the run started from; empty = none.
     #[serde(default)]
     pub preset: String,
+    #[serde(default)]
+    pub mode: RunMode,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -543,6 +570,7 @@ mod tests {
             verify_citations: false,
             gap_round: false,
             preset: String::new(),
+            mode: RunMode::Research,
         };
         let mut r = Record::new("q".into(), cfg);
         r.status = RunStatus::Researching;
@@ -677,9 +705,12 @@ mod tests {
     #[test]
     fn run_config_without_report_style_loads() {
         let mut v = serde_json::to_value(rec(&[])).unwrap();
-        v["config"].as_object_mut().unwrap().remove("report_style");
+        let cfg = v["config"].as_object_mut().unwrap();
+        cfg.remove("report_style");
+        cfg.remove("mode");
         let r: Record = serde_json::from_value(v).unwrap();
         assert!(r.config.report_style.is_empty());
+        assert_eq!(r.config.mode, RunMode::Research);
     }
 
     #[test]

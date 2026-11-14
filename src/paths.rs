@@ -4,6 +4,7 @@ use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub fn root() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".rsc")
@@ -45,8 +46,10 @@ pub fn ensure_dirs() -> Result<()> {
 
 /// Write `bytes` to `path` (mode 0600 on Unix) via tmp file + rename.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    // Unique per call: concurrent writers to one path (parallel agents persisting) must not share a tmp file.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(".{}.{}.tmp", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
     let tmp = PathBuf::from(tmp);
     {
         let mut opts = OpenOptions::new();
@@ -57,11 +60,41 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         f.write_all(bytes)?;
         f.sync_all()?;
     }
-    fs::rename(&tmp, path).with_context(|| format!("rename to {}", path.display()))?;
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("rename to {}", path.display()));
+    }
     Ok(())
 }
 
 /// Create a private directory (and parents): mode 0700 on Unix.
 pub fn create_private_dir(p: &Path) -> Result<()> {
     ensure_dir(p)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_atomic_writes_to_one_path_all_succeed() {
+        let dir = std::env::temp_dir().join(format!("rsc-paths-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("research.json");
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let target = target.clone();
+                std::thread::spawn(move || {
+                    for i in 0..50 {
+                        atomic_write(&target, format!("{t}-{i}").as_bytes()).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert!(fs::read_to_string(&target).unwrap().contains('-'));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "tmp files left behind");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

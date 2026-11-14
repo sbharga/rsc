@@ -8,7 +8,7 @@ use crate::config::{self, Config, MAX_AGENTS};
 use crate::export::{self, Format};
 use crate::paths;
 use crate::pricing::Pricing;
-use crate::research::store::{self, AgentStatus, LinkStatus, RunStatus, Support};
+use crate::research::store::{self, AgentStatus, LinkStatus, RunMode, RunStatus, Support};
 use crate::research::{Ctx, Run, RunEvent, plan};
 use crate::research::{context, prompts};
 use crate::term;
@@ -46,7 +46,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("rsc uninstall", "[--purge | --keep-data] [--yes]", "Remove rsc; --purge also deletes ~/.rsc."),
     (
         "rsc run",
-        "\"<question>\" [--agents N|auto] [--preset NAME] [--context FILE]... [--verify] [--yes] [--no-clarify] [-o FILE] [--json]",
+        "\"<question>\" [--agents N|auto] [--preset NAME] [--context FILE]... [--verify] [--discover] [--yes] [--no-clarify] [-o FILE] [--json]",
         "Research a question without the app.",
     ),
     (
@@ -106,6 +106,7 @@ struct Opts {
     /// `Some(0)` = `--agents auto`.
     agents: Option<u8>,
     verify: bool,
+    discover: bool,
     yes: bool,
     no_clarify: bool,
     output: Option<PathBuf>,
@@ -132,6 +133,8 @@ fn parse_opts(cmd: &str, args: &[String]) -> anyhow::Result<Opts> {
             "--agents" if cmd == "resume" => bail!("--agents only applies to rsc run."),
             "--verify" if cmd == "run" => o.verify = true,
             "--verify" if cmd == "resume" => bail!("--verify only applies to rsc run."),
+            "--discover" if cmd == "run" => o.discover = true,
+            "--discover" if cmd == "resume" => bail!("--discover only applies to rsc run."),
             "--yes" | "-y" if runs => o.yes = true,
             "--no-clarify" if runs => o.no_clarify = true,
             "--json" if runs => o.json = true,
@@ -297,6 +300,9 @@ async fn run(opts: Opts) -> anyhow::Result<i32> {
         rc.preset = name;
     }
     rc.verify_citations |= opts.verify;
+    if opts.discover {
+        rc.mode = RunMode::Discover;
+    }
     let sigint = interrupt()?;
     let started = Instant::now();
     let run = Run::start(s.ctx, opts.target.trim().to_string(), rc, context, s.tty && !opts.no_clarify);
@@ -646,7 +652,18 @@ mod tests {
     fn run_with_all_flags() {
         let o = parse_opts(
             "run",
-            &args(&["What is X?", "--agents", "3", "--verify", "-y", "--no-clarify", "-o", "out.md", "--json"]),
+            &args(&[
+                "What is X?",
+                "--agents",
+                "3",
+                "--verify",
+                "--discover",
+                "-y",
+                "--no-clarify",
+                "-o",
+                "out.md",
+                "--json",
+            ]),
         )
         .unwrap();
         assert_eq!(
@@ -655,6 +672,7 @@ mod tests {
                 target: "What is X?".into(),
                 agents: Some(3),
                 verify: true,
+                discover: true,
                 yes: true,
                 no_clarify: true,
                 output: Some("out.md".into()),
