@@ -910,7 +910,9 @@ impl App {
             return;
         }
         if ctrl(&k, 'c') {
-            self.quit = true;
+            if !self.clear_focused_input() {
+                self.quit = true;
+            }
             return;
         }
         if !matches!(self.modal, Modal::None) {
@@ -960,6 +962,39 @@ impl App {
             Screen::History => !self.history.filtering,
             Screen::Home => self.home.chips,
             Screen::Clarify | Screen::Chat | Screen::SignIn => false,
+        }
+    }
+
+    /// Ctrl+C: empties the text box being typed in; false when none has focus or it is already empty.
+    fn clear_focused_input(&mut self) -> bool {
+        match &mut self.modal {
+            Modal::Save(m) => m.ta.clear(),
+            Modal::Export(m) => m.ta.clear(),
+            Modal::Attach(m) => m.ta.clear(),
+            Modal::Number(n) => n.ta.clear(),
+            Modal::Style(s) => s.ta.clear(),
+            Modal::Angle(a) => {
+                if a.focus_brief {
+                    a.brief.clear()
+                } else {
+                    a.title.clear()
+                }
+            }
+            Modal::None => match self.screen {
+                Screen::Home if !self.home.chips => self.home.input.clear(),
+                Screen::Clarify => {
+                    let f = self.clarify.focus;
+                    self.clarify.answers.get_mut(f).is_some_and(|t| t.clear())
+                }
+                Screen::Chat => self.chat.as_mut().is_some_and(|c| c.input.clear()),
+                Screen::History if self.history.filtering && !self.history.filter.is_empty() => {
+                    self.history.filter.clear();
+                    self.history.sel = 0;
+                    true
+                }
+                _ => false,
+            },
+            _ => false,
         }
     }
 

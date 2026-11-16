@@ -83,7 +83,7 @@ Global keys:
 | `Ctrl+R` | History |
 | `Ctrl+O` | Settings |
 | `Ctrl+U` | Manage usage |
-| `Ctrl+C` | Quit |
+| `Ctrl+C` | Clear the text box you are typing in; quit when it is empty |
 
 ## Headless use
 

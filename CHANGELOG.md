@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3
+
+- Ctrl+C in the TUI first clears the text box you are typing in (question, chat, clarify answers, history search, modal inputs); press it again on an empty box, or anywhere else, to quit.
+
 ## 0.3.2
 
 - Discover mode (`mode = "discover"`, Mode chip on Home, Default mode in Settings, `rsc run --discover`): the planner adds exploratory angles, researchers report new ideas, and the final report adds a `## New perspectives and ideas` section. Stored per run, so resume and chat deep-dive keep it.

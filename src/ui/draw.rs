@@ -1124,7 +1124,7 @@ const GLOBAL_KEYS: [(&str, &str); 6] = [
     ("Ctrl+O", "settings"),
     ("Ctrl+U", "manage usage"),
     ("F1", "help"),
-    ("Ctrl+C", "quit"),
+    ("Ctrl+C", "clear text, or quit"),
 ];
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
