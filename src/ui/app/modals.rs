@@ -29,7 +29,7 @@ impl App {
             }
             Modal::UsageLimit => match k.code {
                 KeyCode::Enter => {
-                    open_url(USAGE_URL);
+                    open_url(self.usage_url());
                     Modal::None
                 }
                 KeyCode::Esc => Modal::None,
@@ -347,12 +347,7 @@ impl App {
                     AcctAction::Switch(id) => {
                         if let Ok(a) = Account::load(&id) {
                             let _ = auth::set_active_account(Some(&id));
-                            if let Some(r) = &self.run {
-                                r.cancel();
-                            }
-                            if let Some(c) = self.chat.take() {
-                                c.chat.cancel.cancel();
-                            }
+                            self.stop_activity();
                             if a.has_tokens() && a.plan_usage_enabled {
                                 self.models = Models::Loading;
                                 self.activate(a);
@@ -364,12 +359,7 @@ impl App {
                     }
                     AcctAction::SignOut => {
                         if let Some(a) = self.account.clone() {
-                            if let Some(r) = &self.run {
-                                r.cancel();
-                            }
-                            if let Some(c) = self.chat.take() {
-                                c.chat.cancel.cancel();
-                            }
+                            self.stop_activity();
                             let tx = self.msg_tx.clone();
                             let id = a.id();
                             tokio::spawn(async move {
@@ -389,6 +379,38 @@ impl App {
                             self.run = None;
                             self.screen = Screen::SignIn;
                         }
+                    }
+                    AcctAction::UseKey => {
+                        if let Some(key) = auth::api_key() {
+                            if let Err(e) = auth::set_method(Method::ApiKey) {
+                                self.toast(format!("Couldn't save sign-in method: {e}"));
+                            }
+                            self.stop_activity();
+                            self.models = Models::Loading;
+                            self.activate_key(key);
+                        }
+                    }
+                    AcctAction::EnterKey => {
+                        self.signin.return_to = Some(Screen::Settings);
+                        self.open_key_entry(None);
+                    }
+                    AcctAction::RemoveKey => {
+                        if let Err(e) = auth::remove_api_key() {
+                            self.toast(format!("Couldn't remove the API key: {e}"));
+                            return Modal::None;
+                        }
+                        if let Err(e) = auth::set_method(Method::Chatgpt) {
+                            self.toast(format!("Couldn't save sign-in method: {e}"));
+                        }
+                        self.stop_activity();
+                        self.api_key = None;
+                        self.client = None;
+                        self.run = None;
+                        self.models = Models::Loading;
+                        self.signin =
+                            SignIn { phase: SignInPhase::Idle, existing: None, return_to: None, use_key: false };
+                        self.route_startup();
+                        self.toast("API key removed");
                     }
                 }
                 return Modal::None;

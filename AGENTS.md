@@ -39,7 +39,7 @@ CI runs `cargo fmt --check`, clippy and the tests on Ubuntu, macOS and Windows. 
 | `src/research/tools.rs` | `web_search` and `fetch_url` tools |
 | `src/api/mod.rs` | Responses API client, SSE streaming, error classification, retry |
 | `src/api/sse.rs` | SSE parser |
-| `src/auth/mod.rs` | Sign in with ChatGPT (OAuth + PKCE, local callback, token refresh) |
+| `src/auth/mod.rs` | Sign in with ChatGPT (OAuth + PKCE, local callback, token refresh), the saved OpenAI API key, the active sign-in method and `Credential` |
 | `src/config.rs` | `config.toml` |
 | `src/pricing.rs` | `pricing.toml` and cost estimates |
 | `src/paths.rs` | `~/.rsc` layout, `atomic_write`, private directories |

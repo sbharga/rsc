@@ -3,7 +3,7 @@
 //! Never calls `store::mark_interrupted`: that would flip a run that a TUI in another process is still working on.
 
 use crate::api::Client;
-use crate::auth::{self, Account, AuthHandle};
+use crate::auth::{self, Account, AuthHandle, Credential, Method};
 use crate::config::{self, Config, MAX_AGENTS};
 use crate::export::{self, Format};
 use crate::paths;
@@ -255,12 +255,26 @@ fn setup() -> anyhow::Result<Setup> {
     let pricing = Pricing::load();
     prompts::seed();
     let tty = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
-    let acct = auth::active_account_id().and_then(|id| Account::load(&id).ok()).filter(Account::has_tokens);
-    let Some(acct) = acct else { bail!("Not signed in. Run rsc to sign in.") };
-    if !acct.plan_usage_enabled {
-        bail!("ChatGPT plan usage is not enabled. Run rsc to enable it.");
-    }
-    let client = Client::new(AuthHandle::new(acct.id()));
+    let account = || auth::active_account_id().and_then(|id| Account::load(&id).ok()).filter(Account::has_tokens);
+    let cred = match auth::method() {
+        Method::ApiKey => match auth::api_key() {
+            Some(k) => Credential::ApiKey(k.key),
+            None => bail!("No OpenAI API key. Run rsc to add one, or set OPENAI_API_KEY."),
+        },
+        Method::Chatgpt => match account() {
+            Some(acct) => {
+                if !acct.plan_usage_enabled {
+                    bail!("ChatGPT plan usage is not enabled. Run rsc to enable it.");
+                }
+                Credential::Account(AuthHandle::new(acct.id()))
+            }
+            None => match auth::api_key() {
+                Some(k) => Credential::ApiKey(k.key),
+                None => bail!("Not signed in. Run rsc to sign in, or set OPENAI_API_KEY."),
+            },
+        },
+    };
+    let client = Client::new(cred);
     let (tx, rx) = unbounded_channel();
     Ok(Setup { ctx: Ctx { client: client.clone(), pricing, tx }, client, cfg, rx, tty })
 }

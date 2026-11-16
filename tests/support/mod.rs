@@ -83,6 +83,7 @@ pub struct Mock {
     pub base: String,
     log: Log,
     hits: Arc<AtomicUsize>,
+    auths: Arc<Mutex<Vec<String>>>,
 }
 
 impl Mock {
@@ -92,14 +93,15 @@ impl Mock {
         let log: Log = Arc::default();
         let hits = Arc::new(AtomicUsize::new(0));
         let handler = Arc::new(handler);
-        let (l, h) = (log.clone(), hits.clone());
+        let auths: Arc<Mutex<Vec<String>>> = Arc::default();
+        let (l, h, a) = (log.clone(), hits.clone(), auths.clone());
         tokio::spawn(async move {
             loop {
                 let Ok((sock, _)) = listener.accept().await else { return };
-                tokio::spawn(serve(sock, handler.clone(), l.clone(), h.clone()));
+                tokio::spawn(serve(sock, handler.clone(), l.clone(), h.clone(), a.clone()));
             }
         });
-        Mock { base, log, hits }
+        Mock { base, log, hits, auths }
     }
 
     pub fn count(&self, k: &Kind) -> usize {
@@ -118,6 +120,11 @@ impl Mock {
     /// Every HTTP request, including `/models`.
     pub fn hits(&self) -> usize {
         self.hits.load(Ordering::SeqCst)
+    }
+
+    /// The `Authorization` header of every HTTP request, including `/models` (empty when absent).
+    pub fn auth_headers(&self) -> Vec<String> {
+        self.auths.lock().unwrap().clone()
     }
 }
 
@@ -179,15 +186,26 @@ async fn serve(
     handler: Arc<dyn Fn(&Req) -> Reply + Send + Sync>,
     log: Log,
     hits: Arc<AtomicUsize>,
+    auths: Arc<Mutex<Vec<String>>>,
 ) {
     let Some((head, body)) = read_request(&mut sock).await else { return };
+    let auth = head
+        .lines()
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+        .map(|(_, v)| v.trim().to_string())
+        .unwrap_or_default();
+    auths.lock().unwrap().push(auth);
     hits.fetch_add(1, Ordering::SeqCst);
     let path = head.split_whitespace().nth(1).unwrap_or("");
     let resp = if path.ends_with("/models") {
         json_response(
             200,
             &json!({"models":[{"slug":"mock-1","display_name":"Mock","visibility":"list",
-                "supported_reasoning_levels":["low","medium","high"]}]}),
+                "supported_reasoning_levels":["low","medium","high"]}],
+                "data":[{"id":"gpt-5.1","object":"model","created":2},
+                    {"id":"gpt-5.1-2025-11-13","object":"model","created":2},
+                    {"id":"whisper-1","object":"model","created":1}]}),
         )
     } else if path.ends_with("/responses") {
         let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
@@ -240,6 +258,16 @@ impl Env {
             .collect();
         std::fs::write(root.join("config.toml"), format!("{base}{config_toml}")).unwrap();
         Env { home, mock }
+    }
+
+    /// Switch to the API-key method with a saved key.
+    pub fn use_api_key(&self, key: &str) {
+        let root = self.home.join(".rsc");
+        std::fs::write(root.join("api_key.json"), json!({"key": key}).to_string()).unwrap();
+        let p = root.join("state.json");
+        let mut st: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        st["method"] = json!("api_key");
+        std::fs::write(&p, st.to_string()).unwrap();
     }
 
     pub fn cmd(&self, args: &[&str]) -> tokio::process::Command {

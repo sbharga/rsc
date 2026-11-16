@@ -1,5 +1,6 @@
 use super::app::*;
 use super::fmt::{self, SPINNER, one_line, pad, trunc};
+use crate::auth;
 use crate::config::MAX_AGENTS;
 use crate::research::LogEntry;
 use crate::research::store::{AgentRec, AgentStatus, LinkStatus, RunMode, RunStatus, Support, progress};
@@ -157,10 +158,12 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             let spin = SPINNER[app.tick % SPINNER.len()];
             right.push_str(&format!("{spin} {} {}%   ", rv.status.label(), (rv.progress * 100.0).round() as u32));
         }
-        if app.screen != Screen::SignIn
-            && let Some(a) = &app.account
-        {
-            right.push_str(&format!("Using ChatGPT plan · {}", a.email));
+        if app.screen != Screen::SignIn {
+            if app.api_key.is_some() {
+                right.push_str("Using OpenAI API key");
+            } else if let Some(a) = &app.account {
+                right.push_str(&format!("Using ChatGPT plan · {}", a.email));
+            }
         }
         (vec![Span::styled(" rsc", accent().add_modifier(Modifier::BOLD))], right)
     };
@@ -174,7 +177,14 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let hint = match app.screen {
-        Screen::SignIn => "Enter continue · Esc quit".to_string(),
+        Screen::SignIn => match app.signin.phase {
+            SignInPhase::Idle => "↑/↓ choose · Enter continue · Esc quit",
+            SignInPhase::Waiting { .. } => "c copy link · Esc cancel",
+            SignInPhase::KeyEntry(_) => "Enter save · Esc back",
+            SignInPhase::Checking => "Checking the API key…",
+            SignInPhase::Error(_) | SignInPhase::NotEnabled => "Enter continue · Esc back",
+        }
+        .to_string(),
         Screen::Home => {
             let base = if app.home.chips {
                 "←/→ move · Enter change · Tab input · ? help"
@@ -231,11 +241,47 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
 // ---- screens ----
 
 fn draw_signin(f: &mut Frame, app: &App, area: Rect) {
+    if let SignInPhase::KeyEntry(k) = &app.signin.phase {
+        let r = centered(area, area.width.min(64), 7);
+        let [_, title, ta, hint] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(2),
+        ])
+        .areas(r);
+        f.render_widget(
+            Paragraph::new(Span::styled("Paste your OpenAI API key", Style::new().add_modifier(Modifier::BOLD)))
+                .alignment(Alignment::Center),
+            title,
+        );
+        f.render_widget(&k.ta, ta);
+        let line = if let Some(e) = &k.err {
+            Span::styled(e.clone(), Style::new().fg(Color::Red))
+        } else if auth::env_api_key().is_some() && auth::saved_api_key().is_none() {
+            Span::styled("Leave empty to use OPENAI_API_KEY", muted())
+        } else {
+            Span::styled("Saved to ~/.rsc/api_key.json. Usage is billed to your API account.", muted())
+        };
+        f.render_widget(Paragraph::new(line).alignment(Alignment::Center).wrap(Wrap { trim: true }), hint);
+        return;
+    }
     let mut lines: Vec<Line> =
         vec![Line::from(Span::styled("rsc", accent().add_modifier(Modifier::BOLD))), Line::raw("")];
     let spin = SPINNER[app.tick % SPINNER.len()];
     match &app.signin.phase {
-        SignInPhase::Idle => lines.push(Line::from(button("Continue with ChatGPT"))),
+        SignInPhase::Idle => {
+            let opt = |label: &str, on: bool| {
+                Line::from(if on { button(label) } else { Span::styled(format!(" {label} "), muted()) })
+            };
+            lines.push(opt("Continue with ChatGPT", !app.signin.use_key));
+            lines.push(Line::raw(""));
+            lines.push(opt("Use an OpenAI API key", app.signin.use_key));
+        }
+        SignInPhase::Checking => {
+            lines.push(Line::from(vec![Span::styled(spin, accent()), Span::raw(" Checking API key…")]));
+        }
+        SignInPhase::KeyEntry(_) => {}
         SignInPhase::Waiting { url, .. } => {
             lines.push(Line::from(vec![Span::styled(spin, accent()), Span::raw(" Waiting for browser…")]));
             lines.push(Line::raw(""));
@@ -251,7 +297,7 @@ fn draw_signin(f: &mut Frame, app: &App, area: Rect) {
         }
         SignInPhase::NotEnabled => {
             lines.push(Line::from("ChatGPT plan use isn't enabled"));
-            lines.push(Line::from(Span::styled("Enter: enable (re-consent) · Esc: quit", muted())));
+            lines.push(Line::from(Span::styled("Enter: enable (re-consent) · Esc: back", muted())));
         }
     }
     let h = (lines.len() as u16 + 6).min(area.height);
@@ -758,7 +804,12 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
         }
         let (label, value, hint): (String, String, &str) = match row {
             Row::Account => {
-                ("Account".into(), app.account.as_ref().map(|a| a.email.clone()).unwrap_or_else(|| "—".into()), "")
+                let v = match &app.api_key {
+                    Some(k) if k.from_env => "OpenAI API key (OPENAI_API_KEY)".to_string(),
+                    Some(_) => "OpenAI API key".to_string(),
+                    None => app.account.as_ref().map(|a| a.email.clone()).unwrap_or_else(|| "—".into()),
+                };
+                ("Account".into(), v, "")
             }
             Row::Usage => ("Manage usage ↗".into(), String::new(), ""),
             Row::Model(st) => {
@@ -892,7 +943,14 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             let text = vec![
                 Line::from(Span::styled("Usage limit reached", Style::new().add_modifier(Modifier::BOLD))),
                 Line::raw(""),
-                Line::from(Span::styled("Your ChatGPT plan or rsc's app limit was reached.", muted())),
+                Line::from(Span::styled(
+                    if app.api_key.is_some() {
+                        "Your OpenAI API quota or billing limit was reached."
+                    } else {
+                        "Your ChatGPT plan or rsc's app limit was reached."
+                    },
+                    muted(),
+                )),
                 Line::raw(""),
                 Line::from(vec![button("Manage usage"), Span::styled("   Esc Close", muted())]),
             ];

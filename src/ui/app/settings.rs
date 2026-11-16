@@ -16,16 +16,28 @@ impl App {
                             items.push((format!("Switch to {} · {}", a.email, a.id()), AcctAction::Switch(a.id())));
                         }
                     }
-                    items.push(("Add account".into(), AcctAction::Add));
-                    if self.account.as_ref().is_some_and(|a| a.has_tokens()) {
-                        items.push(("Sign out".into(), AcctAction::SignOut));
-                    }
-                    if self.account.as_ref().is_some_and(|a| !a.plan_usage_enabled) {
-                        items.push(("Enable ChatGPT plan usage".into(), AcctAction::Enable));
+                    items.push(("Add ChatGPT account".into(), AcctAction::Add));
+                    if self.api_key.is_none() {
+                        if auth::api_key().is_some() {
+                            items.push(("Switch to OpenAI API key".into(), AcctAction::UseKey));
+                        } else {
+                            items.push(("Use an OpenAI API key".into(), AcctAction::EnterKey));
+                        }
+                        if self.account.as_ref().is_some_and(|a| a.has_tokens()) {
+                            items.push(("Sign out".into(), AcctAction::SignOut));
+                        }
+                        if self.account.as_ref().is_some_and(|a| !a.plan_usage_enabled) {
+                            items.push(("Enable ChatGPT plan usage".into(), AcctAction::Enable));
+                        }
+                    } else {
+                        items.push(("Change API key".into(), AcctAction::EnterKey));
+                        if auth::saved_api_key().is_some() {
+                            items.push(("Remove saved API key".into(), AcctAction::RemoveKey));
+                        }
                     }
                     self.modal = Modal::Account(items, 0);
                 }
-                Row::Usage => open_url(USAGE_URL),
+                Row::Usage => open_url(self.usage_url()),
                 Row::Model(stage) if k.code == KeyCode::Enter => {
                     self.modal = Modal::Picker(Picker {
                         scope: PickScope::Settings,

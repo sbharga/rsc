@@ -67,6 +67,9 @@ async fn happy_path_writes_report() {
     assert!(dir.join("agents/1.md").exists() && dir.join("agents/2.md").exists());
 
     let planner = &env.mock.bodies(&Kind::Planner)[0];
+    assert!(planner.get("include").is_none());
+    let auths = env.mock.auth_headers();
+    assert!(!auths.is_empty() && auths.iter().all(|a| a == "Bearer tok"), "{auths:?}");
     assert!(planner["instructions"].as_str().unwrap().contains("Do not ask any more questions"));
     for t in ["A", "B"] {
         let bodies = env.mock.bodies(&Kind::Researcher(t.into()));
@@ -79,6 +82,29 @@ async fn happy_path_writes_report() {
     let show = run(&env, &["show", &id]).await;
     let report = std::fs::read_to_string(dir.join("report.md")).unwrap();
     assert_eq!(out(&show).trim_end(), report.trim_end());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_key_mode_sends_key_and_encrypted_reasoning() {
+    let env = Env::new(BASE, |r| normal(r, &["A", "B"])).await;
+    env.use_api_key("sk-test");
+    let o = run(&env, &["run", "q", "--yes"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let auths = env.mock.auth_headers();
+    assert!(!auths.is_empty() && auths.iter().all(|a| a == "Bearer sk-test"), "{auths:?}");
+    let planner = &env.mock.bodies(&Kind::Planner)[0];
+    assert_eq!(planner["model"], "gpt-5.1");
+    assert_eq!(planner["include"], json!(["reasoning.encrypted_content"]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn openai_api_key_env_used_when_not_signed_in() {
+    let env = Env::new(BASE, |r| normal(r, &["A", "B"])).await;
+    std::fs::remove_file(env.home.join(".rsc/state.json")).unwrap();
+    let o = finish(env.cmd(&["run", "q", "--yes"]).env("OPENAI_API_KEY", "sk-env").spawn().unwrap()).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let auths = env.mock.auth_headers();
+    assert!(!auths.is_empty() && auths.iter().all(|a| a == "Bearer sk-env"), "{auths:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

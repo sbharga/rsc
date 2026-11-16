@@ -1,12 +1,12 @@
-//! Responses API client (ChatGPT-plan token sharing).
+//! Responses API client (ChatGPT-plan tokens or an OpenAI API key).
 
 pub mod sse;
 
-use crate::auth::{AuthError, AuthHandle};
+use crate::auth::{AuthError, Credential};
 use crate::pricing::Usage;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
@@ -94,6 +94,8 @@ pub fn classify(status: Option<u16>, body: &Value, request_id: Option<String>) -
         "subscription_sharing_usage_limit_exceeded" => ErrKind::UsageLimit,
         "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable" => ErrKind::Retryable,
         "subscription_sharing_invalid_user" => ErrKind::Fatal,
+        "insufficient_quota" => ErrKind::UsageLimit,
+        "rate_limit_exceeded" => ErrKind::Retryable,
         _ => match status {
             Some(401) => ErrKind::Auth,
             Some(s) if s >= 500 => ErrKind::Retryable,
@@ -107,7 +109,7 @@ impl From<AuthError> for ApiError {
     fn from(e: AuthError) -> Self {
         let kind = match e {
             AuthError::Retryable(_) => ErrKind::Retryable,
-            AuthError::SignInRequired => ErrKind::Auth,
+            AuthError::SignInRequired | AuthError::KeyRejected => ErrKind::Auth,
             _ => ErrKind::Fatal,
         };
         ApiError::new(kind, e.to_string())
@@ -199,11 +201,11 @@ pub fn parse_usage(resp: &Value, output: &[Value]) -> Usage {
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
-    auth: Arc<AuthHandle>,
+    auth: Credential,
 }
 
 impl Client {
-    pub fn new(auth: Arc<AuthHandle>) -> Self {
+    pub fn new(auth: Credential) -> Self {
         let http = http_builder()
             .user_agent(concat!("rsc/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(20))
@@ -239,7 +241,7 @@ impl Client {
             if status >= 400 {
                 return Err(classify(Some(status), &body, rid));
             }
-            return Ok(parse_models(&body));
+            return Ok(if self.auth.is_api_key() { parse_api_models(&body) } else { parse_models(&body) });
         }
     }
 
@@ -250,8 +252,12 @@ impl Client {
         cancel: &CancellationToken,
         token: &str,
     ) -> Result<Completed, ApiError> {
-        let send =
-            self.http.post(format!("{}/responses", API_BASE.as_str())).bearer_auth(token).json(&req.body()).send();
+        let mut body = req.body();
+        if self.auth.is_api_key() {
+            // store:false: reasoning items can only be sent back next turn if they come back encrypted.
+            body["include"] = json!(["reasoning.encrypted_content"]);
+        }
+        let send = self.http.post(format!("{}/responses", API_BASE.as_str())).bearer_auth(token).json(&body).send();
         let resp = tokio::select! {
             _ = cancel.cancelled() => return Err(ApiError::cancelled()),
             r = send => r.map_err(Self::net)?,
@@ -399,6 +405,48 @@ pub fn parse_models(body: &Value) -> Vec<ModelInfo> {
         .unwrap_or_default()
 }
 
+/// `GET /models` with an API key: `data[].id` and `created`, no visibility or effort metadata.
+pub fn parse_api_models(body: &Value) -> Vec<ModelInfo> {
+    const FAMILIES: [&str; 3] = ["gpt-5", "o3", "o4-mini"];
+    const SKIP: [&str; 8] =
+        ["audio", "realtime", "transcribe", "tts", "image", "search", "deep-research", "chat-latest"];
+    fn dated(id: &str) -> bool {
+        let b = id.as_bytes();
+        b.len() >= 11
+            && b[b.len() - 11..].iter().enumerate().all(|(i, c)| match i {
+                0 | 5 | 8 => *c == b'-',
+                _ => c.is_ascii_digit(),
+            })
+    }
+    fn plain(id: &str) -> bool {
+        id == "gpt-5"
+            || id.strip_prefix("gpt-5.").is_some_and(|r| !r.is_empty() && r.bytes().all(|c| c.is_ascii_digit()))
+    }
+    let mut found: Vec<(u8, i64, String)> = body["data"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| {
+                    let id = m["id"].as_str()?;
+                    let keep = FAMILIES.iter().any(|f| id.starts_with(f))
+                        && !SKIP.iter().any(|s| id.contains(s))
+                        && !dated(id);
+                    keep.then(|| (if plain(id) { 0 } else { 1 }, m["created"].as_i64().unwrap_or(0), id.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort_by(|a, b| (a.0, std::cmp::Reverse(a.1), &a.2).cmp(&(b.0, std::cmp::Reverse(b.1), &b.2)));
+    found
+        .into_iter()
+        .map(|(_, _, id)| ModelInfo {
+            display_name: id.clone(),
+            slug: id,
+            efforts: ["low", "medium", "high"].iter().map(|s| s.to_string()).collect(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,5 +517,30 @@ mod tests {
         assert_eq!(m[0].efforts, vec!["low", "high"]);
         assert_eq!(m[1].display_name, "c");
         assert_eq!(m[1].efforts.len(), 4);
+    }
+
+    #[test]
+    fn api_models_parse() {
+        let b = json!({"data":[
+            {"id":"whisper-1","created":1},
+            {"id":"gpt-5","created":1},
+            {"id":"gpt-5.1","created":2},
+            {"id":"gpt-5.1-2025-11-13","created":2},
+            {"id":"gpt-5-mini","created":3},
+            {"id":"o3","created":1},
+            {"id":"gpt-5-search-api","created":1},
+            {"id":"gpt-4o","created":5}]});
+        let m = parse_api_models(&b);
+        let slugs: Vec<&str> = m.iter().map(|m| m.slug.as_str()).collect();
+        assert_eq!(slugs, ["gpt-5.1", "gpt-5", "gpt-5-mini", "o3"]);
+        assert!(m.iter().all(|m| m.efforts.len() == 3));
+    }
+
+    #[test]
+    fn api_key_quota_and_rate_limit() {
+        let q = json!({"error":{"code":"insufficient_quota","message":"m"}});
+        assert_eq!(classify(Some(429), &q, None).kind, ErrKind::UsageLimit);
+        let r = json!({"error":{"code":"rate_limit_exceeded","message":"m"}});
+        assert_eq!(classify(Some(429), &r, None).kind, ErrKind::Retryable);
     }
 }

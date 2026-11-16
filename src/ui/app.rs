@@ -11,7 +11,7 @@ mod viewer;
 
 use super::fmt::{self, open_url};
 use crate::api::{ApiError, Client, ErrKind, ModelInfo};
-use crate::auth::{self, Account, AuthError, AuthHandle, SignInUi, USAGE_URL};
+use crate::auth::{self, Account, AuthError, AuthHandle, Credential, Method, SignInUi, USAGE_URL};
 use crate::config::{Config, StageModel, resolve_model};
 use crate::pricing::Pricing;
 use crate::research::chat::Chat;
@@ -39,6 +39,7 @@ pub enum AppMsg {
     Models(String, Result<Vec<ModelInfo>, ApiError>),
     UpdateAvailable(String),
     Context(Result<LocalDoc, String>),
+    KeyChecked { key: String, save: bool, result: Result<(), ApiError> },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,8 +58,15 @@ pub enum Screen {
 pub enum SignInPhase {
     Idle,
     Waiting { url: Option<String>, cancel: CancellationToken },
+    KeyEntry(Box<KeyEntry>),
+    Checking,
     Error(String),
     NotEnabled,
+}
+
+pub struct KeyEntry {
+    pub ta: TextArea<'static>,
+    pub err: Option<String>,
 }
 
 pub struct SignIn {
@@ -66,6 +74,8 @@ pub struct SignIn {
     pub existing: Option<Account>,
     /// Where Esc returns to when adding an account on top of a working session.
     pub return_to: Option<Screen>,
+    /// Which sign-in option is highlighted: the API key rather than ChatGPT.
+    pub use_key: bool,
 }
 
 pub enum Models {
@@ -171,6 +181,9 @@ pub enum AcctAction {
     Add,
     SignOut,
     Enable,
+    UseKey,
+    EnterKey,
+    RemoveKey,
 }
 
 pub enum Modal {
@@ -295,6 +308,8 @@ pub struct App {
     pub msg_tx: UnboundedSender<AppMsg>,
     pub run_tx: UnboundedSender<RunEvent>,
     pub account: Option<Account>,
+    /// `Some` exactly when the API-key method is active; then `account` is `None`.
+    pub api_key: Option<auth::ApiKey>,
     pub client: Option<Client>,
     pub screen: Screen,
     pub modal: Modal,
@@ -413,6 +428,23 @@ fn answer_ta() -> TextArea<'static> {
     t
 }
 
+fn key_ta() -> TextArea<'static> {
+    let mut t = TextArea::default();
+    t.set_mask_char('•');
+    t.set_placeholder_text("sk-…");
+    t.set_placeholder_style(Style::new().fg(MUTED));
+    t.set_cursor_line_style(Style::default());
+    t.set_cursor_style(Style::new().add_modifier(Modifier::REVERSED));
+    t.set_block(
+        Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(ACCENT)).title(" API key "),
+    );
+    t
+}
+
+fn active_chatgpt_account() -> Option<Account> {
+    auth::active_account_id().and_then(|id| Account::load(&id).ok())
+}
+
 fn newline_key(k: &KeyEvent) -> bool {
     (k.code == KeyCode::Enter && k.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)) || ctrl(k, 'j')
 }
@@ -475,10 +507,11 @@ impl App {
             msg_tx,
             run_tx,
             account: None,
+            api_key: None,
             client: None,
             screen: Screen::SignIn,
             modal: Modal::None,
-            signin: SignIn { phase: SignInPhase::Idle, existing: None, return_to: None },
+            signin: SignIn { phase: SignInPhase::Idle, existing: None, return_to: None, use_key: false },
             models: Models::Loading,
             home,
             run: None,
@@ -520,7 +553,18 @@ impl App {
     }
 
     fn route_startup(&mut self) {
-        let acct = auth::active_account_id().and_then(|id| Account::load(&id).ok());
+        let acct = active_chatgpt_account();
+        if auth::method() == Method::ApiKey {
+            self.signin.existing = acct;
+            match auth::api_key() {
+                Some(k) => {
+                    self.activate_key(k);
+                    self.screen = Screen::Home;
+                }
+                None => self.open_key_entry(None),
+            }
+            return;
+        }
         match acct {
             Some(a) if a.has_tokens() => {
                 self.activate(a);
@@ -646,7 +690,8 @@ impl App {
 
     fn activate(&mut self, acct: Account) {
         let handle = AuthHandle::new(acct.id());
-        self.client = Some(Client::new(handle));
+        self.client = Some(Client::new(Credential::Account(handle)));
+        self.api_key = None;
         let needs_welcome = acct.plan_usage_enabled && !acct.welcomed;
         let enabled = acct.plan_usage_enabled;
         self.account = Some(acct);
@@ -662,10 +707,49 @@ impl App {
         self.fetch_models();
     }
 
+    fn activate_key(&mut self, key: auth::ApiKey) {
+        self.client = Some(Client::new(Credential::ApiKey(key.key.clone())));
+        self.account = None;
+        self.api_key = Some(key);
+        self.fetch_models();
+    }
+
+    /// Identifies the signed-in session so late model lists from a previous one are dropped.
+    fn session_id(&self) -> Option<String> {
+        if self.api_key.is_some() { Some("api_key".into()) } else { self.account.as_ref().map(|a| a.id()) }
+    }
+
+    pub fn usage_url(&self) -> &'static str {
+        if self.api_key.is_some() { auth::API_USAGE_URL } else { USAGE_URL }
+    }
+
+    fn stop_activity(&mut self) {
+        if let Some(r) = &self.run {
+            r.cancel();
+        }
+        if let Some(c) = self.chat.take() {
+            c.chat.cancel.cancel();
+        }
+    }
+
+    fn open_key_entry(&mut self, err: Option<String>) {
+        self.signin.phase = SignInPhase::KeyEntry(Box::new(KeyEntry { ta: key_ta(), err }));
+        self.signin.use_key = true;
+        self.screen = Screen::SignIn;
+    }
+
+    fn check_key(&mut self, key: String, save: bool) {
+        self.signin.phase = SignInPhase::Checking;
+        let tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            let result = Client::new(Credential::ApiKey(key.clone())).list_models().await.map(|_| ());
+            let _ = tx.send(AppMsg::KeyChecked { key, save, result });
+        });
+    }
+
     pub fn fetch_models(&mut self) {
-        let (Some(c), Some(a)) = (self.client.clone(), self.account.as_ref()) else { return };
+        let (Some(c), Some(id)) = (self.client.clone(), self.session_id()) else { return };
         self.models = Models::Loading;
-        let id = a.id();
         let tx = self.msg_tx.clone();
         tokio::spawn(async move {
             let r = c.list_models().await;
@@ -735,13 +819,38 @@ impl App {
                 AuthError::Declined => self.signin.phase = SignInPhase::NotEnabled,
                 other => self.signin.phase = SignInPhase::Error(other.to_string()),
             },
+            AppMsg::KeyChecked { key, save, result } => match result {
+                Ok(()) => {
+                    if save && let Err(e) = auth::save_api_key(&key) {
+                        self.open_key_entry(Some(format!("Couldn't save the key: {e}")));
+                        return;
+                    }
+                    if let Err(e) = auth::set_method(Method::ApiKey) {
+                        self.toast(format!("Couldn't save sign-in method: {e}"));
+                    }
+                    self.stop_activity();
+                    self.signin.phase = SignInPhase::Idle;
+                    self.signin.return_to = None;
+                    self.models = Models::Loading;
+                    self.activate_key(auth::ApiKey { key, from_env: !save });
+                    self.screen = Screen::Home;
+                }
+                Err(e) => {
+                    let msg = if e.kind == ErrKind::Auth {
+                        e.message
+                    } else {
+                        format!("Couldn't check the key: {}", e.message)
+                    };
+                    self.open_key_entry(Some(msg));
+                }
+            },
             AppMsg::SignedOut(confirmed) => {
                 if !confirmed {
                     self.toast("Signed out locally; remote revocation not confirmed — disconnect rsc in ChatGPT Settings if needed.");
                 }
             }
             AppMsg::Models(id, r) => {
-                if self.account.as_ref().map(|a| a.id()) != Some(id) {
+                if self.session_id() != Some(id) {
                     return;
                 }
                 self.models = match r {
@@ -749,9 +858,14 @@ impl App {
                     Ok(v) => Models::Ready(v),
                     Err(e) => {
                         if e.kind == ErrKind::Auth {
-                            self.signin.existing = self.account.clone();
-                            self.signin.phase = SignInPhase::Idle;
-                            self.screen = Screen::SignIn;
+                            if self.api_key.is_some() {
+                                self.signin.existing = active_chatgpt_account();
+                                self.open_key_entry(Some(e.message.clone()));
+                            } else {
+                                self.signin.existing = self.account.clone();
+                                self.signin.phase = SignInPhase::Idle;
+                                self.screen = Screen::SignIn;
+                            }
                         }
                         Models::Failed(e.message)
                     }
@@ -930,7 +1044,7 @@ impl App {
                 return;
             }
             if ctrl(&k, 'u') {
-                open_url(USAGE_URL);
+                open_url(self.usage_url());
                 return;
             }
             if ctrl(&k, 'g') {
@@ -992,6 +1106,10 @@ impl App {
                     self.history.sel = 0;
                     true
                 }
+                Screen::SignIn => match &mut self.signin.phase {
+                    SignInPhase::KeyEntry(k) => k.ta.clear(),
+                    _ => false,
+                },
                 _ => false,
             },
             _ => false,
@@ -1035,6 +1153,11 @@ impl App {
             Modal::None if self.screen == Screen::Chat => {
                 if let Some(c) = &mut self.chat {
                     c.input.insert_str(s);
+                }
+            }
+            Modal::None if self.screen == Screen::SignIn => {
+                if let SignInPhase::KeyEntry(k) = &mut self.signin.phase {
+                    k.ta.insert_str(s.trim());
                 }
             }
             _ => {}

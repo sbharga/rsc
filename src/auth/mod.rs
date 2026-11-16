@@ -1,4 +1,4 @@
-//! Sign in with ChatGPT (SIWC) token-sharing flow.
+//! Sign in with ChatGPT (SIWC) token-sharing flow, the saved OpenAI API key, and the active sign-in method.
 
 use crate::paths;
 use anyhow::Context;
@@ -25,6 +25,7 @@ pub const SCOPE: &str = "openid profile email offline_access resource.invoke cha
 pub const PLAN_SCOPE: &str = "chatgpt.tokens.use.direct";
 pub const DYNAMIC_CLIENT: &str = "dynamic_agent_client";
 pub const USAGE_URL: &str = "https://chatgpt.com/settings/usage";
+pub const API_USAGE_URL: &str = "https://platform.openai.com/usage";
 
 #[derive(Debug, Clone)]
 pub enum AuthError {
@@ -38,6 +39,7 @@ pub enum AuthError {
     Timeout,
     Retryable(String),
     Fatal(String),
+    KeyRejected,
 }
 
 impl std::fmt::Display for AuthError {
@@ -53,6 +55,7 @@ impl std::fmt::Display for AuthError {
             AuthError::Timeout => write!(f, "Sign-in timed out"),
             AuthError::Retryable(m) => write!(f, "Network error: {m}"),
             AuthError::Fatal(m) => write!(f, "{m}"),
+            AuthError::KeyRejected => write!(f, "The API key was rejected."),
         }
     }
 }
@@ -132,19 +135,106 @@ pub fn list_accounts() -> Vec<Account> {
     v
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Method {
+    #[default]
+    Chatgpt,
+    ApiKey,
+}
+
 #[derive(Serialize, Deserialize, Default)]
 struct State {
     active_account: Option<String>,
+    #[serde(default)]
+    method: Method,
+}
+
+fn load_state() -> State {
+    std::fs::read_to_string(paths::root().join("state.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_state(st: &State) -> anyhow::Result<()> {
+    paths::atomic_write(&paths::root().join("state.json"), &serde_json::to_vec_pretty(st)?)
 }
 
 pub fn active_account_id() -> Option<String> {
-    let s = std::fs::read_to_string(paths::root().join("state.json")).ok()?;
-    serde_json::from_str::<State>(&s).ok()?.active_account
+    load_state().active_account
 }
 
+/// `Some` also makes ChatGPT the active method.
 pub fn set_active_account(id: Option<&str>) -> anyhow::Result<()> {
-    let st = State { active_account: id.map(String::from) };
-    paths::atomic_write(&paths::root().join("state.json"), &serde_json::to_vec_pretty(&st)?)
+    let mut st = load_state();
+    st.active_account = id.map(String::from);
+    if id.is_some() {
+        st.method = Method::Chatgpt;
+    }
+    save_state(&st)
+}
+
+pub fn method() -> Method {
+    load_state().method
+}
+
+pub fn set_method(m: Method) -> anyhow::Result<()> {
+    let mut st = load_state();
+    st.method = m;
+    save_state(&st)
+}
+
+#[derive(Serialize, Deserialize)]
+struct KeyFile {
+    key: String,
+    #[serde(default)]
+    saved_at: String,
+}
+
+/// API key and whether it came from `OPENAI_API_KEY`. No Debug: never print the key.
+#[derive(Clone)]
+pub struct ApiKey {
+    pub key: String,
+    pub from_env: bool,
+}
+
+fn key_path() -> PathBuf {
+    paths::root().join("api_key.json")
+}
+
+pub fn saved_api_key() -> Option<String> {
+    let s = std::fs::read_to_string(key_path()).ok()?;
+    let f = serde_json::from_str::<KeyFile>(&s).ok()?;
+    let k = f.key.trim();
+    (!k.is_empty()).then(|| k.to_string())
+}
+
+pub fn env_api_key() -> Option<String> {
+    let k = std::env::var("OPENAI_API_KEY").ok()?;
+    let k = k.trim();
+    (!k.is_empty()).then(|| k.to_string())
+}
+
+pub fn api_key() -> Option<ApiKey> {
+    if let Some(key) = saved_api_key() {
+        return Some(ApiKey { key, from_env: false });
+    }
+    env_api_key().map(|key| ApiKey { key, from_env: true })
+}
+
+pub fn save_api_key(key: &str) -> anyhow::Result<()> {
+    paths::ensure_dirs()?;
+    let f = KeyFile { key: key.to_string(), saved_at: chrono::Utc::now().to_rfc3339() };
+    paths::atomic_write(&key_path(), &serde_json::to_vec_pretty(&f)?)
+}
+
+pub fn remove_api_key() -> anyhow::Result<()> {
+    match std::fs::remove_file(key_path()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn host_id() -> anyhow::Result<String> {
@@ -498,6 +588,33 @@ pub async fn sign_in(existing: Option<&Account>, reconsent: bool, ui: SignInUi) 
     result
 }
 
+/// What authenticates API requests: a ChatGPT account's refreshed tokens or a fixed API key.
+#[derive(Clone)]
+pub enum Credential {
+    Account(Arc<AuthHandle>),
+    ApiKey(String),
+}
+
+impl Credential {
+    pub async fn access_token(&self) -> Result<String, AuthError> {
+        match self {
+            Credential::Account(h) => h.access_token().await,
+            Credential::ApiKey(k) => Ok(k.clone()),
+        }
+    }
+
+    pub async fn force_refresh(&self) -> Result<String, AuthError> {
+        match self {
+            Credential::Account(h) => h.force_refresh().await,
+            Credential::ApiKey(_) => Err(AuthError::KeyRejected),
+        }
+    }
+
+    pub fn is_api_key(&self) -> bool {
+        matches!(self, Credential::ApiKey(_))
+    }
+}
+
 /// Shared handle that vends fresh access tokens for one account.
 pub struct AuthHandle {
     id: String,
@@ -661,6 +778,12 @@ mod tests {
         assert!(!html.contains("a<b@x.com"));
     }
 
+    #[test]
+    fn state_without_method_is_chatgpt() {
+        let st: State = serde_json::from_str(r#"{"active_account":"abc"}"#).unwrap();
+        assert_eq!(st.method, Method::Chatgpt);
+        assert_eq!(serde_json::to_value(Method::ApiKey).unwrap(), "api_key");
+    }
     #[test]
     fn page_escapes_error() {
         let html = callback_page(&Err(AuthError::Fatal("<script>x</script>".into())));

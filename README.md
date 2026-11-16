@@ -71,7 +71,7 @@ Output is colored when it goes to a terminal; set `NO_COLOR` to turn color off.
 
 Run `rsc`. `rsc --version` prints the version; `rsc update` updates rsc.
 
-First launch opens the browser for "Sign in with ChatGPT". A local callback runs on `127.0.0.1` on a random port. If the browser can't open, press `c` to copy the URL.
+First launch asks how to sign in. "Continue with ChatGPT" opens the browser for "Sign in with ChatGPT"; a local callback runs on `127.0.0.1` on a random port, and if the browser can't open, press `c` to copy the URL. "Use an OpenAI API key" asks for a key, checks it, and saves it to `~/.rsc/api_key.json`; usage is then billed to your API account. When no key is saved, `OPENAI_API_KEY` is used (leave the box empty to use it, and `rsc run` uses it when you aren't signed in). Settings → Account switches between the key and your ChatGPT accounts, changes the key, or removes the saved key. With a key, requests ask for encrypted reasoning, and the model list shows the GPT-5 and o-series reasoning models the key can use.
 
 Then type a question and press Enter. Press `F1` (or `?` where it isn't typed as text) for the keys on any screen.
 
@@ -114,7 +114,8 @@ Everything lives under `~/.rsc` (`%USERPROFILE%\.rsc` on Windows; directories 07
 | Path | Contents |
 |---|---|
 | `accounts/<id>.json` | OAuth tokens |
-| `state.json` | Active account |
+| `api_key.json` | Saved OpenAI API key |
+| `state.json` | Active account and sign-in method |
 | `config.toml` | Settings |
 | `pricing.toml` | Cost-estimate rates, seeded on first run |
 | `prompts/*.md` | Editable stage prompts, seeded on first run |
@@ -125,7 +126,7 @@ Everything lives under `~/.rsc` (`%USERPROFILE%\.rsc` on Windows; directories 07
 | `research/<id>/report.v<n>.md` | Earlier revisions, written when a chat deep-dive replaces the report |
 | `research/<id>/chat.json` | Follow-up chat |
 
-- API requests are sent with `store: false`. Whether OpenAI may train on your data is set by your ChatGPT account's Data Controls.
+- API requests are sent with `store: false`. Whether OpenAI may train on your data is set by your ChatGPT account's Data Controls, or by your API organization's data controls when you use an API key.
 - `fetch_url` is off by default. When on, it downloads http(s) URLs the model picks, from your machine. rsc refuses loopback, private, link-local, unique-local, CGNAT and other non-public addresses, including through redirects (max 5) and DNS. It ignores system proxy settings so this check always applies.
 - Pages can contain instructions aimed at the model (prompt injection). rsc marks fetched text as untrusted, but a prompt cannot fully prevent a model from, for example, putting your question into a URL it fetches. The site would then see it. Leave `fetch_url` off if that matters.
 - `check_links` (on by default) sends a HEAD, then if needed a GET, to each URL cited in the final report, from your machine; sites see your IP. It uses the same address guard as `fetch_url` and never reads the body. `verify_citations` additionally downloads cited pages and sends their text to the compactor model.

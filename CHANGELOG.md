@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.4
+
+- OpenAI API key as a second sign-in method: choose "Use an OpenAI API key" on the sign-in screen, or Settings → Account to switch between the key and ChatGPT accounts. The key is checked, then saved to ~/.rsc/api_key.json (0600); when none is saved, OPENAI_API_KEY is used (also by rsc run when not signed in). With a key, requests ask for encrypted reasoning, the model list shows GPT-5 and o-series reasoning models, quota errors open the usage-limit dialog and rate limits are retried.
+
 ## 0.3.3
 
 - Ctrl+C in the TUI first clears the text box you are typing in (question, chat, clarify answers, history search, modal inputs); press it again on an empty box, or anywhere else, to quit.

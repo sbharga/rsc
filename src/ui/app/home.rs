@@ -38,7 +38,7 @@ impl App {
                 self.home.agents = (self.home.agents + 1).min(MAX_AGENTS)
             }
             KeyCode::Char('-') if self.home.chip == 0 => self.home.agents = self.home.agents.saturating_sub(1),
-            KeyCode::Char('m') => open_url(USAGE_URL),
+            KeyCode::Char('m') => open_url(self.usage_url()),
             KeyCode::Char('r') => {
                 if matches!(self.models, Models::Failed(_)) {
                     self.fetch_models();
