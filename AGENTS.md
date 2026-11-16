@@ -36,6 +36,7 @@ CI runs `cargo fmt --check`, clippy and the tests on Ubuntu, macOS and Windows. 
 | `src/research/sources.rs` | Source extraction, dedup, `[n]` citation parsing and numbered lists (pure) |
 | `src/research/context.rs` | Attached local files: `load` (.md, .txt, .pdf) and the `block` added to the task brief |
 | `src/research/prompts.rs` | Built-in stage prompts, `~/.rsc/prompts/*.md` seeding and loading, `fill` placeholders |
+| `src/research/js.rs` | `run_js`: browser discovery, headless Chromium over the DevTools protocol, timeouts, output formatting |
 | `src/research/tools.rs` | `web_search` and `fetch_url` tools |
 | `src/api/mod.rs` | Responses API client, SSE streaming, error classification, retry |
 | `src/api/sse.rs` | SSE parser |

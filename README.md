@@ -10,7 +10,7 @@ You ask a question; rsc runs this pipeline:
 
 1. A planner does a few web searches and may ask up to 3 clarifying questions, over at most 2 rounds. Submitting empty answers skips them.
 2. You review and edit the research angles (1–99). With `default_agents = 0` (the default) the planner picks 2–8; the Review screen warns when two angles look alike.
-3. Researchers run in parallel, each with web search. They can optionally use `fetch_url`.
+3. Researchers run in parallel, each with web search. They can optionally use `fetch_url`, and run JavaScript experiments in a local headless browser (`run_js`).
 4. Optionally, a reviewer reads the first-round reports and proposes follow-up researchers (`gap_round`); you approve or skip them.
 5. A synthesizer writes a single cited Markdown report. With more than 8 reports it merges them in groups first.
 
@@ -128,6 +128,7 @@ Everything lives under `~/.rsc` (`%USERPROFILE%\.rsc` on Windows; directories 07
 
 - API requests are sent with `store: false`. Whether OpenAI may train on your data is set by your ChatGPT account's Data Controls, or by your API organization's data controls when you use an API key.
 - `fetch_url` is off by default. When on, it downloads http(s) URLs the model picks, from your machine. rsc refuses loopback, private, link-local, unique-local, CGNAT and other non-public addresses, including through redirects (max 5) and DNS. It ignores system proxy settings so this check always applies.
+- `run_js` (on by default; needs Chrome, Chromium, Edge or Brave, found automatically or set with `browser`) runs model-written JavaScript in your browser's sandbox, in a fresh temporary profile that is deleted after each call. Page network is blocked through an unreachable proxy, so the code cannot reach the internet or localhost. Set `run_js_enabled = false` to turn it off.
 - Pages can contain instructions aimed at the model (prompt injection). rsc marks fetched text as untrusted, but a prompt cannot fully prevent a model from, for example, putting your question into a URL it fetches. The site would then see it. Leave `fetch_url` off if that matters.
 - `check_links` (on by default) sends a HEAD, then if needed a GET, to each URL cited in the final report, from your machine; sites see your IP. It uses the same address guard as `fetch_url` and never reads the body. `verify_citations` additionally downloads cited pages and sends their text to the compactor model.
 - Files you attach (`--context`, Files chip) are read from disk once; their text (up to 30,000 characters each) is sent to the model and stored in `research.json`. Resume does not re-read them.
@@ -153,6 +154,8 @@ Everything lives under `~/.rsc` (`%USERPROFILE%\.rsc` on Windows; directories 07
 | `max_run_tokens` | `0` | Run budget in tokens (all stages); `0` = no cap. When reached, no new researchers start, running ones write their report, and synthesis completes. The report notes it. |
 | `max_run_cost_usd` | `0` | Same cap in estimated USD from `pricing.toml`; models without rates count only web-search cost. |
 | `fetch_url_enabled` | `false` | |
+| `run_js_enabled` | `true` | Let researchers run JavaScript in a local headless browser; off automatically when none is found |
+| `browser` | `""` | Chrome, Chromium, Edge or Brave executable for `run_js`; empty = find one |
 | `check_links` | `true` | Probe cited URLs and flag dead ones |
 | `verify_citations` | `false` | Check each cited page against the claims that cite it (extra model calls) |
 | `gap_round` | `false` | After the first round, a reviewer may propose follow-up researchers for you to approve |

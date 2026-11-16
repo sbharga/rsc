@@ -71,6 +71,8 @@ fn parse_plan(text: &str, force: bool, max: usize) -> Option<PlanReply> {
     Some(PlanReply { understanding: field("understanding"), notes: field("notes"), outcome })
 }
 
+const PLANNER_JS_NOTE: &str = "\n\nResearchers can also run JavaScript (a headless browser without network) to compute, simulate and benchmark. When the request involves algorithms, math, data or performance, give at least one angle a concrete experiment: what to implement or measure and against which baseline.";
+
 /// Planner system prompt. `n` researchers exactly, or `0` = the planner chooses within the auto bounds.
 fn planner_instructions(template: &str, n: u8, force: bool, mode: RunMode) -> String {
     let (team, step3) = if n > 0 {
@@ -237,7 +239,11 @@ impl Run {
                     "properties":{"title":{"type":"string"},"brief":{"type":"string"}},
                     "required":["title","brief"],"additionalProperties":false}}},
             "required":["understanding","notes","questions","perspectives"],"additionalProperties":false}});
-        let instructions = planner_instructions(&template, n, force, mode);
+        let mut instructions = planner_instructions(&template, n, force, mode);
+        instructions.push_str(&format!("\n\nToday's date: {}.", today()));
+        if self.js_enabled.load(Ordering::Relaxed) {
+            instructions.push_str(PLANNER_JS_NOTE);
+        }
         let max = if n == 0 { AUTO_MAX_AGENTS } else { MAX_AGENTS } as usize;
         let req = ResponseRequest {
             model: sm.model.clone(),

@@ -176,6 +176,8 @@ pub struct RunConfig {
     pub agents: u8,
     pub max_parallel: u8,
     pub fetch_url: bool,
+    #[serde(default)]
+    pub run_js: bool,
     pub report_words: u32,
     pub max_turns: u32,
     pub compact_threshold_tokens: u64,
@@ -559,6 +561,7 @@ mod tests {
             agents: 4,
             max_parallel: 3,
             fetch_url: false,
+            run_js: false,
             report_words: 1,
             max_turns: 1,
             compact_threshold_tokens: 1,

@@ -238,6 +238,7 @@ mod tests {
             agents: 1,
             max_parallel: 1,
             fetch_url: false,
+            run_js: false,
             report_words: 0,
             max_turns: 1,
             compact_threshold_tokens: 1,

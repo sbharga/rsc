@@ -581,3 +581,46 @@ async fn discover_mode_reaches_every_stage() {
     let j: Value = serde_json::from_str(&out(&o)).unwrap();
     assert_eq!(j["config"]["mode"], "discover");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a browser"]
+async fn run_js_output_reaches_next_turn() {
+    // `Env::cmd` clears the environment, so the binary cannot search PATH itself.
+    let names = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
+    let Some(browser) = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .flat_map(|d| names.iter().map(move |n| d.join(n)))
+        .find(|p| p.is_file())
+    else {
+        return;
+    };
+    let cfg = format!("{BASE}run_js_enabled = true\nbrowser = \"{}\"\n", browser.display());
+    let env = Env::new(&cfg, |r| match (&r.kind, r.n) {
+        (Kind::Researcher(t), 0) if t == "A" => Reply::Output(vec![json!({
+            "type":"function_call","name":"run_js","call_id":"j1",
+            "arguments": json!({"code":"console.log(6*7); return 'ok'","timeout_seconds":20}).to_string()
+        })]),
+        _ => normal(r, &["A", "B"]),
+    })
+    .await;
+    let o = run(&env, &["run", "q", "--yes"]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+
+    let a = env.mock.bodies(&Kind::Researcher("A".into()));
+    assert_eq!(a.len(), 2);
+    let output = a[1]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["type"] == "function_call_output" && i["call_id"] == "j1")
+        .map(|i| i["output"].as_str().unwrap().to_string())
+        .expect("run_js output in the second request");
+    assert!(output.contains("42") && output.contains("[result] ok"), "{output}");
+    assert!(a[0]["instructions"].as_str().unwrap().contains("run_js"));
+    let first = a[0]["input"][0]["content"][0]["text"].as_str().unwrap();
+    assert!(first.contains("Today's date:"), "{first}");
+    assert!(first.contains("The other researchers' angles") && first.contains("- B:"), "{first}");
+    assert!(first.contains("The planner's notes"), "{first}");
+
+    let planner = &env.mock.bodies(&Kind::Planner)[0];
+    assert!(planner["instructions"].as_str().unwrap().contains("Researchers can also run JavaScript"));
+}

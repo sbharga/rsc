@@ -42,6 +42,10 @@ pub struct Config {
     /// Same, in estimated USD; 0 = no cap.
     pub max_run_cost_usd: f64,
     pub fetch_url_enabled: bool,
+    /// Let researchers run JavaScript in a local headless browser (run_js).
+    pub run_js_enabled: bool,
+    /// Chrome, Chromium, Edge or Brave executable for run_js; empty = find one.
+    pub browser: String,
     /// Check GitHub releases for a newer rsc on launch.
     pub check_updates: bool,
     /// Probe each cited URL (HEAD/GET) to flag dead links; sites see your IP.
@@ -132,6 +136,8 @@ impl Default for Config {
             max_run_tokens: 0,
             max_run_cost_usd: 0.0,
             fetch_url_enabled: false,
+            run_js_enabled: true,
+            browser: String::new(),
             check_updates: true,
             check_links: true,
             verify_citations: false,
@@ -185,6 +191,7 @@ impl Config {
             agents,
             max_parallel: self.max_parallel,
             fetch_url: self.fetch_url_enabled,
+            run_js: self.run_js_enabled,
             report_words: self.report_words,
             max_turns: self.max_turns,
             compact_threshold_tokens: self.compact_threshold_tokens,

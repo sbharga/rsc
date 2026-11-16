@@ -276,7 +276,13 @@ fn setup() -> anyhow::Result<Setup> {
     };
     let client = Client::new(cred);
     let (tx, rx) = unbounded_channel();
-    Ok(Setup { ctx: Ctx { client: client.clone(), pricing, tx }, client, cfg, rx, tty })
+    Ok(Setup {
+        ctx: Ctx { client: client.clone(), pricing, tx, browser: crate::research::js::find_browser(&cfg.browser) },
+        client,
+        cfg,
+        rx,
+        tty,
+    })
 }
 
 async fn run(opts: Opts) -> anyhow::Result<i32> {

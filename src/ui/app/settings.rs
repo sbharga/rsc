@@ -78,6 +78,10 @@ impl App {
                     self.cfg.fetch_url_enabled = !self.cfg.fetch_url_enabled;
                     self.save_cfg();
                 }
+                Row::RunJs => {
+                    self.cfg.run_js_enabled = !self.cfg.run_js_enabled;
+                    self.save_cfg();
+                }
                 Row::CheckLinks => {
                     self.cfg.check_links = !self.cfg.check_links;
                     self.save_cfg();

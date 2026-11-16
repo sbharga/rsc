@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.5
+
+- `run_js` tool for researchers (on by default; `run_js_enabled` in config.toml and a Settings toggle; `browser` overrides the executable): each call runs model-written JavaScript in a fresh headless Chrome, Chromium, Edge or Brave with page network blocked, a timeout of up to 300 s, and returns console output, the return value or error, and the run time. It is off, with a toast, when no browser is found.
+- Researchers now start with today's date, the planner's scoping notes and the other researchers' angles. The planner knows researchers can run code.
+
 ## 0.3.4
 
 - OpenAI API key as a second sign-in method: choose "Use an OpenAI API key" on the sign-in screen, or Settings → Account to switch between the key and ChatGPT accounts. The key is checked, then saved to ~/.rsc/api_key.json (0600); when none is saved, OPENAI_API_KEY is used (also by rsc run when not signed in). With a key, requests ask for encrypted reasoning, the model list shows GPT-5 and o-series reasoning models, quota errors open the usage-limit dialog and rate limits are retried.

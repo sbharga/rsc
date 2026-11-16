@@ -828,6 +828,9 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 let v = app.cfg.report_words;
                 ("Report length (words)".into(), if v == 0 { "auto".to_string() } else { v.to_string() }, "")
             }
+            Row::RunJs => {
+                ("run_js tool".into(), on_off(app.cfg.run_js_enabled), "code runs in a local headless browser")
+            }
             Row::FetchUrl => ("fetch_url tool".into(), on_off(app.cfg.fetch_url_enabled), "sites see your IP"),
             Row::CheckLinks => ("Check cited links".into(), on_off(app.cfg.check_links), "sites see your IP"),
             Row::VerifyCitations => ("Verify citations".into(), on_off(app.cfg.verify_citations), "extra model calls"),

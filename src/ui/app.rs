@@ -275,6 +275,7 @@ pub enum Row {
     Mode,
     Num(Num),
     FetchUrl,
+    RunJs,
     CheckLinks,
     VerifyCitations,
     GapRound,
@@ -282,7 +283,7 @@ pub enum Row {
     ReportStyle,
 }
 
-pub const ROWS: [Row; 16] = [
+pub const ROWS: [Row; 17] = [
     Row::Account,
     Row::Usage,
     Row::Model(Stage::Planner),
@@ -295,6 +296,7 @@ pub const ROWS: [Row; 16] = [
     Row::Num(Num::ReportWords),
     Row::ReportStyle,
     Row::FetchUrl,
+    Row::RunJs,
     Row::CheckLinks,
     Row::VerifyCitations,
     Row::GapRound,
@@ -595,7 +597,12 @@ impl App {
     }
 
     pub fn ctx(&self) -> Option<Ctx> {
-        Some(Ctx { client: self.client.clone()?, pricing: self.pricing.clone(), tx: self.run_tx.clone() })
+        Some(Ctx {
+            client: self.client.clone()?,
+            pricing: self.pricing.clone(),
+            tx: self.run_tx.clone(),
+            browser: crate::research::js::find_browser(&self.cfg.browser),
+        })
     }
 
     pub fn catalog(&self) -> &[ModelInfo] {

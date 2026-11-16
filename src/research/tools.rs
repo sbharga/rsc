@@ -13,13 +13,20 @@ pub fn web_search_tool() -> Value {
     json!({"type": "web_search"})
 }
 
-pub fn fetch_url_namespace() -> Value {
-    json!({"type":"namespace","name":"rsc","description":"Local helpers","tools":[
-        {"type":"function","name":"fetch_url",
-         "description":"Fetch a web page or PDF and return its readable text.",
-         "parameters":{"type":"object","properties":{"url":{"type":"string"}},
-                       "required":["url"],"additionalProperties":false},
-         "strict":true}]})
+/// The `rsc` namespace with the enabled local functions; `None` when there are none.
+pub fn local_namespace(fetch: bool, js: bool) -> Option<Value> {
+    let mut tools = vec![];
+    if fetch {
+        tools.push(json!({"type":"function","name":"fetch_url",
+            "description":"Fetch a web page or PDF and return its readable text.",
+            "parameters":{"type":"object","properties":{"url":{"type":"string"}},
+                          "required":["url"],"additionalProperties":false},
+            "strict":true}));
+    }
+    if js {
+        tools.push(super::js::tool());
+    }
+    (!tools.is_empty()).then(|| json!({"type":"namespace","name":"rsc","description":"Local helpers","tools":tools}))
 }
 
 pub fn host_of(url: &str) -> String {

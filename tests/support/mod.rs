@@ -251,11 +251,12 @@ impl Env {
         });
         std::fs::write(root.join("accounts").join(format!("{id}.json")), acct.to_string()).unwrap();
         std::fs::write(root.join("state.json"), json!({"active_account": id}).to_string()).unwrap();
-        let base: String = [("check_updates", "false"), ("max_turns", "5"), ("check_links", "false")]
-            .iter()
-            .filter(|(k, _)| !config_toml.lines().any(|l| l.trim_start().starts_with(&format!("{k} ="))))
-            .map(|(k, v)| format!("{k} = {v}\n"))
-            .collect();
+        let base: String =
+            [("check_updates", "false"), ("max_turns", "5"), ("check_links", "false"), ("run_js_enabled", "false")]
+                .iter()
+                .filter(|(k, _)| !config_toml.lines().any(|l| l.trim_start().starts_with(&format!("{k} ="))))
+                .map(|(k, v)| format!("{k} = {v}\n"))
+                .collect();
         std::fs::write(root.join("config.toml"), format!("{base}{config_toml}")).unwrap();
         Env { home, mock }
     }

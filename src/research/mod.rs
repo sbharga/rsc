@@ -4,6 +4,7 @@ mod agent;
 pub mod chat;
 pub mod context;
 mod gaps;
+pub mod js;
 pub mod plan;
 pub mod prompts;
 pub mod sources;
@@ -68,6 +69,8 @@ pub struct Ctx {
     pub client: Client,
     pub pricing: Pricing,
     pub tx: mpsc::UnboundedSender<RunEvent>,
+    /// Browser for `run_js`; `None` = not available.
+    pub browser: Option<std::path::PathBuf>,
 }
 
 pub struct RunState {
@@ -112,6 +115,7 @@ pub struct Run {
     pub cancel: CancellationToken,
     server_compaction: AtomicBool,
     fetch_enabled: AtomicBool,
+    js_enabled: AtomicBool,
     reasoning_summary: AtomicBool,
     restarts: AtomicU32,
 }
@@ -180,6 +184,29 @@ pub fn task_brief(r: &Record) -> String {
     s
 }
 
+fn today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// What researcher `idx` starts with: the task, today's date, the planner's scoping notes and the other researchers' angles.
+fn researcher_input(r: &Record, idx: usize) -> String {
+    let mut s = task_brief(r);
+    s.push_str(&format!("\n\nToday's date: {}.", today()));
+    if !r.planner_notes.trim().is_empty() {
+        s.push_str(&format!(
+            "\n\nThe planner's notes from initial scoping (starting points; verify before relying on them):\n{}",
+            r.planner_notes
+        ));
+    }
+    if r.perspectives.len() > 1 {
+        s.push_str("\n\nThe other researchers' angles (leave these to them):\n");
+        for p in r.perspectives.iter().enumerate().filter(|(i, _)| *i != idx).map(|(_, p)| p) {
+            s.push_str(&format!("- {}: {}\n", p.title, p.brief));
+        }
+    }
+    s
+}
+
 /// Appended to the instructions of the writers the user reads directly (synthesizer, chat).
 fn style_suffix(style: &str) -> String {
     let s = style.trim();
@@ -197,6 +224,7 @@ impl Run {
         let n = record.agents.len();
         let status = record.status;
         let fetch = record.config.fetch_url;
+        let js = record.config.run_js && ctx.browser.is_some();
         Arc::new(Run {
             ctx,
             http: tools::fetch_http(),
@@ -215,6 +243,7 @@ impl Run {
             cancel: CancellationToken::new(),
             server_compaction: AtomicBool::new(true),
             fetch_enabled: AtomicBool::new(fetch),
+            js_enabled: AtomicBool::new(js),
             reasoning_summary: AtomicBool::new(true),
             restarts: AtomicU32::new(0),
         })
@@ -226,7 +255,13 @@ impl Run {
         let mut record = Record::new(question, cfg);
         record.context = context;
         record.prompts = prompts::Prompts::load();
+        let missing_browser = record.config.run_js && ctx.browser.is_none();
         let run = Run::new(ctx, record);
+        if missing_browser {
+            run.notify(RunEvent::Toast(
+                "run_js off: no Chrome, Chromium, Edge or Brave found (set browser in config.toml)".into(),
+            ));
+        }
         run.persist();
         tokio::spawn(run.clone().plan_task(!clarify));
         run
@@ -543,10 +578,21 @@ impl Run {
                             "function_call" => {
                                 let args: Value =
                                     serde_json::from_str(it["arguments"].as_str().unwrap_or("")).unwrap_or(Value::Null);
-                                let url = args["url"].as_str().unwrap_or("");
-                                run.log(t, LogEntry::Open(url.to_string()), false);
-                                if let Some(i) = agent {
-                                    run.set_activity(i, format!("reading: {}", tools::host_of(url)));
+                                if it["name"] == "run_js" {
+                                    let first = args["code"]
+                                        .as_str()
+                                        .and_then(|c| c.lines().map(str::trim).find(|l| !l.is_empty()))
+                                        .unwrap_or("");
+                                    run.log(t, LogEntry::Note(format!("run_js: {first}")), false);
+                                    if let Some(i) = agent {
+                                        run.set_activity(i, "running code");
+                                    }
+                                } else {
+                                    let url = args["url"].as_str().unwrap_or("");
+                                    run.log(t, LogEntry::Open(url.to_string()), false);
+                                    if let Some(i) = agent {
+                                        run.set_activity(i, format!("reading: {}", tools::host_of(url)));
+                                    }
                                 }
                             }
                             "reasoning" => {
