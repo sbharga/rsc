@@ -18,7 +18,7 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 dirs = "7"
 futures-util = { version = "0.3", features = ["sink"] }
 html2text = "0.17"
-jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+jsonwebtoken = { version = "12", features = ["rust_crypto"] }
 open = "5"
 pdf-extract = "0.12"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
