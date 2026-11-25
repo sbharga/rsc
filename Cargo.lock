@@ -1594,7 +1594,7 @@ dependencies = [
  "log",
  "md-5",
  "nom 8.0.0",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rangemap",
  "sha2 0.10.9",
  "stringprep",
@@ -2353,9 +2353,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.3"
+version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+checksum = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -2657,7 +2657,7 @@ dependencies = [
  "open",
  "pdf-extract",
  "pulldown-cmark",
- "rand 0.10.3",
+ "rand 0.10.4",
  "ratatui",
  "ratatui-textarea",
  "reqwest",
@@ -3647,7 +3647,7 @@ dependencies = [
  "http",
  "httparse",
  "log",
- "rand 0.10.3",
+ "rand 0.10.4",
  "sha1",
  "thiserror 2.0.21",
 ]
